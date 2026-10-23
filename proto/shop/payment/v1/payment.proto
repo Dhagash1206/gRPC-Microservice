@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package shop.payment.v1;
+
+option go_package = "grpcshop/gen/shop/payment/v1;paymentv1";
+
+service PaymentService {
+  // Idempotent per idempotency_key: a retry returns the original outcome (success or decline).
+  // FAILED_PRECONDITION if declined or cancelled; INVALID_ARGUMENT if the key is reused
+  // with different parameters.
+  rpc Charge(ChargeRequest) returns (ChargeResponse);
+
+  // Saga compensation. Refunds a successful charge; if no charge exists yet, records
+  // a fence so a late Charge with this key fails. Idempotent.
+  rpc CancelCharge(CancelChargeRequest) returns (CancelChargeResponse);
+}
+
+enum CancelOutcome {
+  CANCEL_OUTCOME_UNSPECIFIED = 0;
+  // No charge existed; future charges with this key are rejected.
+  CANCEL_OUTCOME_FENCED = 1;
+  CANCEL_OUTCOME_REFUNDED = 2;
+  // The charge had been declined, so there is nothing to refund.
+  CANCEL_OUTCOME_NOTHING_TO_REFUND = 3;
+}
+
+message CancelChargeRequest {
+  string idempotency_key = 1;
+}
+
+message CancelChargeResponse {
+  CancelOutcome outcome = 1;
+}
+
+message ChargeRequest {
+  string idempotency_key = 1;
+  string customer_id = 2;
+  int64 amount_cents = 3;
+}
+
+message ChargeResponse {
+  string payment_id = 1;
+}

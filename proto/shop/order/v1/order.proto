@@ -1,0 +1,105 @@
+syntax = "proto3";
+
+package shop.order.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "grpcshop/gen/shop/order/v1;orderv1";
+
+// Public entry point (via Envoy). The customer is identified by the JWT `sub`
+// claim forwarded by Envoy, never by a request field.
+service OrderService {
+  rpc CreateOrder(CreateOrderRequest) returns (Order) {
+    option (google.api.http) = {
+      post: "/v1/orders"
+      body: "*"
+    };
+  }
+
+  // NOT_FOUND for orders belonging to other customers.
+  rpc GetOrder(GetOrderRequest) returns (Order) {
+    option (google.api.http) = {get: "/v1/orders/{id}"};
+  }
+
+  // The caller's orders, newest first.
+  rpc ListOrders(ListOrdersRequest) returns (ListOrdersResponse) {
+    option (google.api.http) = {get: "/v1/orders"};
+  }
+
+  // Refunds the payment and restocks the items of a CONFIRMED order. Idempotent.
+  rpc CancelOrder(CancelOrderRequest) returns (Order) {
+    option (google.api.http) = {
+      post: "/v1/orders/{id}:cancel"
+      body: "*"
+    };
+  }
+}
+
+enum OrderStatus {
+  ORDER_STATUS_UNSPECIFIED = 0;
+  // Checkout in progress.
+  ORDER_STATUS_PENDING = 1;
+  ORDER_STATUS_CONFIRMED = 2;
+  // Checkout failed; reservation and charge are being undone.
+  ORDER_STATUS_COMPENSATING = 3;
+  ORDER_STATUS_FAILED = 4;
+  // Cancellation requested; refund and restock in progress.
+  ORDER_STATUS_CANCELLING = 5;
+  ORDER_STATUS_CANCELLED = 6;
+}
+
+message OrderItem {
+  string sku = 1;
+  int32 quantity = 2;
+}
+
+message OrderLine {
+  string sku = 1;
+  string product_name = 2;
+  int32 quantity = 3;
+  int64 unit_price_cents = 4;
+}
+
+message Order {
+  string id = 1;
+  string customer_id = 2;
+  repeated OrderLine lines = 3;
+  int64 total_cents = 4;
+  string reservation_id = 5;
+  string payment_id = 6;
+  google.protobuf.Timestamp created_at = 7;
+  OrderStatus status = 8;
+  // Set for FAILED orders.
+  string failure_reason = 9;
+}
+
+message CreateOrderRequest {
+  repeated OrderItem items = 1;
+  // Optional but strongly recommended: a client-generated unique value (e.g. a UUID)
+  // reused when retrying after a timeout or network error. A repeat returns the
+  // original order instead of charging again; reusing it with different items is
+  // INVALID_ARGUMENT, and a repeat while the first attempt is running is ABORTED.
+  string idempotency_key = 2;
+}
+
+message GetOrderRequest {
+  string id = 1;
+}
+
+message ListOrdersRequest {
+  // Default 20, max 100.
+  int32 page_size = 1;
+  // From a previous response's next_page_token.
+  string page_token = 2;
+}
+
+message ListOrdersResponse {
+  repeated Order orders = 1;
+  // Empty when there are no more pages.
+  string next_page_token = 2;
+}
+
+message CancelOrderRequest {
+  string id = 1;
+}

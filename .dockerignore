@@ -1,0 +1,8 @@
+.venv
+.git
+certs
+**/__pycache__
+**/.pytest_cache
+python/src/shop
+python/tests
+envoy/descriptors.pb
