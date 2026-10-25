@@ -1,0 +1,38 @@
+groups:
+  - name: grpcshop
+    rules:
+      - alert: OutboxNotDraining
+        expr: grpcshop_outbox_oldest_age_seconds > 60
+        for: 2m
+        labels: { severity: page }
+        annotations:
+          summary: Order events are not reaching RabbitMQ (oldest unpublished event {{ $value | humanizeDuration }} old)
+
+      - alert: DeadLettersWaiting
+        expr: sum by (queue) (rabbitmq_detailed_queue_messages_ready{queue=~".*\\.dlq"}) > 0
+        for: 1m
+        labels: { severity: ticket }
+        annotations:
+          summary: "{{ $value }} dead-lettered messages in {{ $labels.queue }}; fix the cause, then run `make dlq-replay`"
+
+      - alert: CompensationFailing
+        expr: sum(increase(grpcshop_saga_compensations_total{result="error"}[10m])) > 0
+        labels: { severity: page }
+        annotations:
+          summary: Saga compensation is failing; orders are stuck in COMPENSATING/CANCELLING until it succeeds
+
+      - alert: HighServerErrorRatio
+        expr: |
+          sum by (service_name) (rate(traces_span_metrics_calls_total{span_kind="SPAN_KIND_SERVER", status_code="STATUS_CODE_ERROR"}[5m]))
+            / sum by (service_name) (rate(traces_span_metrics_calls_total{span_kind="SPAN_KIND_SERVER"}[5m])) > 0.05
+        for: 5m
+        labels: { severity: page }
+        annotations:
+          summary: "{{ $labels.service_name }}: {{ $value | humanizePercentage }} of requests failing"
+
+      - alert: TelemetryPipelineDown
+        expr: up{job="otel-collector"} == 0
+        for: 2m
+        labels: { severity: ticket }
+        annotations:
+          summary: The OpenTelemetry collector is not being scraped

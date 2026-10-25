@@ -1,0 +1,304 @@
+# Edge proxy: HTTPS termination, JWT validation, REST<->gRPC transcoding,
+# and mTLS to the internal services.
+# Loopback only: the admin API can reconfigure or stop Envoy, so it must not be
+# reachable from other containers on the network.
+admin:
+  address: { socket_address: { address: 127.0.0.1, port_value: 9901 } }
+
+static_resources:
+  listeners:
+    - name: edge_https
+      address: { socket_address: { address: 0.0.0.0, port_value: 8443 } }
+      filter_chains:
+        - transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+              common_tls_context:
+                alpn_protocols: ["h2", "http/1.1"]
+                tls_certificates:
+                  - certificate_chain: { filename: /etc/envoy/certs/envoy.crt }
+                    private_key: { filename: /etc/envoy/certs/envoy.key }
+          filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: edge
+                codec_type: AUTO
+                server_name: grpcshop
+                # This is the edge: trust the TCP peer address and strip client-supplied
+                # x-envoy-* headers instead of trusting them.
+                use_remote_address: true
+                # Envoy creates x-request-id; every service logs and forwards it, and
+                # clients get it back to quote when reporting a problem.
+                generate_request_id: true
+                always_set_request_id_in_response: true
+                tracing:
+                  random_sampling: { value: 100 }
+                  provider:
+                    name: envoy.tracers.opentelemetry
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.config.trace.v3.OpenTelemetryConfig
+                      service_name: envoy
+                      grpc_service:
+                        envoy_grpc: { cluster_name: otel_collector }
+                        timeout: 1s
+                common_http_protocol_options:
+                  # Underscored headers can be confused with dashed ones by some backends.
+                  headers_with_underscores_action: REJECT_REQUEST
+                  idle_timeout: 300s
+                request_timeout: 30s
+                access_log:
+                  - name: envoy.access_loggers.stdout
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                      log_format:
+                        json_format:
+                          rid: "%REQ(X-REQUEST-ID)%"
+                          method: "%REQ(:METHOD)%"
+                          path: "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
+                          status: "%RESPONSE_CODE%"
+                          grpc_status: "%GRPC_STATUS%"
+                          upstream: "%UPSTREAM_CLUSTER%"
+                          duration_ms: "%DURATION%"
+                route_config:
+                  name: edge_routes
+                  response_headers_to_add:
+                    - header: { key: strict-transport-security, value: "max-age=31536000; includeSubDomains" }
+                    - header: { key: x-content-type-options, value: nosniff }
+                    - header: { key: cache-control, value: no-store }
+                  response_headers_to_remove: [x-envoy-upstream-service-time]
+                  virtual_hosts:
+                    - name: grpcshop
+                      domains: ["*"]
+                      typed_per_filter_config:
+                        envoy.filters.http.cors:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy
+                          allow_origin_string_match: [{ exact: "http://localhost:3000" }]
+                          allow_methods: "GET, POST"
+                          allow_headers: "authorization, content-type"
+                          max_age: "600"
+                          # Preflights from other origins get no CORS headers and stop here.
+                          forward_not_matching_preflights: false
+                      # Routes match the gRPC path produced by the transcoder, so REST
+                      # and native gRPC clients share them. Nothing else is exposed.
+                      routes:
+                        # CORS preflight. The cors filter answers it at the edge; it needs a
+                        # cluster route (it ignores direct_response routes) but never forwards.
+                        - match:
+                            prefix: "/v1/"
+                            headers: [{ name: ":method", string_match: { exact: OPTIONS } }]
+                          route: { cluster: order_service }
+                        - match: { prefix: "/shop.order.v1.OrderService/" }
+                          route: { cluster: order_service, timeout: 10s }
+                        - match: { path: "/shop.inventory.v1.InventoryService/ListProducts" }
+                          route: { cluster: inventory_service, timeout: 10s }
+                        - match: { path: "/shop.inventory.v1.InventoryService/RestockProduct" }
+                          route: { cluster: inventory_service, timeout: 10s }
+                          typed_per_filter_config:
+                            envoy.filters.http.rbac:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBACPerRoute
+                              rbac:
+                                rules:
+                                  action: ALLOW
+                                  policies:
+                                    admins-only:
+                                      permissions: [{ any: true }]
+                                      principals:
+                                        - metadata:
+                                            filter: envoy.filters.http.jwt_authn
+                                            path: [{ key: jwt_payload }, { key: roles }]
+                                            value: { list_match: { one_of: { string_match: { exact: admin } } } }
+                http_filters:
+                  # Cheapest checks first: shed load before any parsing or JWT crypto.
+                  - name: envoy.filters.http.local_ratelimit
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                      stat_prefix: edge_rate_limit
+                      # Per client IP: each address gets its own bucket (created on demand,
+                      # bounded by max_dynamic_descriptors). The top-level bucket caps the
+                      # whole instance as a backstop.
+                      token_bucket: { max_tokens: 2000, tokens_per_fill: 1000, fill_interval: 1s }
+                      rate_limits:
+                        - actions: [{ remote_address: {} }]
+                      descriptors:
+                        - entries: [{ key: remote_address }]
+                          token_bucket: { max_tokens: 200, tokens_per_fill: 100, fill_interval: 1s }
+                      max_dynamic_descriptors: 10000
+                      filter_enabled:
+                        default_value: { numerator: 100, denominator: HUNDRED }
+                      filter_enforced:
+                        default_value: { numerator: 100, denominator: HUNDRED }
+                      response_headers_to_add:
+                        - header: { key: x-ratelimit-limited, value: "true" }
+                  - name: envoy.filters.http.buffer
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.buffer.v3.Buffer
+                      # Largest legitimate request (50 line items) is a few KiB.
+                      max_request_bytes: 65536
+                  - name: envoy.filters.http.grpc_json_transcoder
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.grpc_json_transcoder.v3.GrpcJsonTranscoder
+                      proto_descriptor: /etc/envoy/descriptors.pb
+                      services: ["shop.order.v1.OrderService", "shop.inventory.v1.InventoryService"]
+                      convert_grpc_status: true
+                      print_options:
+                        add_whitespace: true
+                        always_print_primitive_fields: true
+                      # Reject unknown JSON fields and query parameters instead of ignoring them.
+                      request_validation_options:
+                        reject_unknown_method: false
+                        reject_unknown_query_parameters: true
+                        reject_binding_body_field_collisions: true
+                  # After the transcoder so routes (and the CORS policy) resolve on gRPC paths.
+                  - name: envoy.filters.http.cors
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors
+                  - name: envoy.filters.http.jwt_authn
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication
+                      providers:
+                        grpcshop_auth:
+                          issuer: https://auth.grpcshop.local
+                          audiences: ["grpcshop-api"]
+                          local_jwks: { filename: /etc/envoy/certs/jwks.json }
+                          # Strip the raw token; forward only the verified claims.
+                          forward: false
+                          forward_payload_header: x-jwt-payload
+                          # Exposes the verified claims to the RBAC filter.
+                          payload_in_metadata: jwt_payload
+                      rules:
+                        - match: { prefix: "/shop.order.v1.OrderService/" }
+                          requires: { provider_name: grpcshop_auth }
+                        - match: { path: "/shop.inventory.v1.InventoryService/RestockProduct" }
+                          requires: { provider_name: grpcshop_auth }
+                  # Role checks per route (see RestockProduct); routes without a policy are allowed.
+                  - name: envoy.filters.http.rbac
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+    # Prometheus scrape target. Exposes only /stats/prometheus from the admin API,
+    # which itself stays bound to loopback.
+    - name: metrics
+      address: { socket_address: { address: 0.0.0.0, port_value: 9902 } }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: metrics
+                route_config:
+                  virtual_hosts:
+                    - name: metrics
+                      domains: ["*"]
+                      routes:
+                        - match: { path: "/stats/prometheus" }
+                          route: { cluster: envoy_admin }
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+    - name: envoy_admin
+      type: STATIC
+      load_assignment:
+        cluster_name: envoy_admin
+        endpoints:
+          - lb_endpoints:
+              - endpoint: { address: { socket_address: { address: 127.0.0.1, port_value: 9901 } } }
+
+    - name: otel_collector
+      type: STRICT_DNS
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config: { http2_protocol_options: {} }
+      load_assignment:
+        cluster_name: otel_collector
+        endpoints:
+          - lb_endpoints:
+              - endpoint: { address: { socket_address: { address: otel-collector, port_value: 4317 } } }
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          sni: otel-collector
+          common_tls_context:
+            tls_params: { tls_minimum_protocol_version: TLSv1_3, tls_maximum_protocol_version: TLSv1_3 }
+            alpn_protocols: ["h2"]
+            tls_certificates:
+              - certificate_chain: { filename: /etc/envoy/certs/envoy.crt }
+                private_key: { filename: /etc/envoy/certs/envoy.key }
+            validation_context:
+              trusted_ca: { filename: /etc/envoy/certs/ca.crt }
+              match_typed_subject_alt_names:
+                - san_type: DNS
+                  matcher: { exact: otel-collector }
+
+    - name: order_service
+      type: STRICT_DNS # resolves every replica, e.g. `docker compose up --scale order=3`
+      lb_policy: ROUND_ROBIN
+      typed_extension_protocol_options: &http2_upstream
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config: { http2_protocol_options: {} }
+      health_checks: &grpc_health_checks
+        - timeout: 2s
+          interval: 5s
+          unhealthy_threshold: 2
+          healthy_threshold: 1
+          grpc_health_check: {}
+      load_assignment:
+        cluster_name: order_service
+        endpoints:
+          - lb_endpoints:
+              - endpoint: { address: { socket_address: { address: order, port_value: 50051 } } }
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          sni: order
+          common_tls_context:
+            tls_params: { tls_minimum_protocol_version: TLSv1_3, tls_maximum_protocol_version: TLSv1_3 }
+            alpn_protocols: ["h2"]
+            tls_certificates:
+              - certificate_chain: { filename: /etc/envoy/certs/envoy.crt }
+                private_key: { filename: /etc/envoy/certs/envoy.key }
+            validation_context:
+              trusted_ca: { filename: /etc/envoy/certs/ca.crt }
+              # Pin the upstream identity, not just "signed by our CA".
+              match_typed_subject_alt_names:
+                - san_type: DNS
+                  matcher: { exact: order }
+
+    - name: inventory_service
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      typed_extension_protocol_options: *http2_upstream
+      health_checks: *grpc_health_checks
+      load_assignment:
+        cluster_name: inventory_service
+        endpoints:
+          - lb_endpoints:
+              - endpoint: { address: { socket_address: { address: inventory, port_value: 50052 } } }
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          sni: inventory
+          common_tls_context:
+            tls_params: { tls_minimum_protocol_version: TLSv1_3, tls_maximum_protocol_version: TLSv1_3 }
+            alpn_protocols: ["h2"]
+            tls_certificates:
+              - certificate_chain: { filename: /etc/envoy/certs/envoy.crt }
+                private_key: { filename: /etc/envoy/certs/envoy.key }
+            validation_context:
+              trusted_ca: { filename: /etc/envoy/certs/ca.crt }
+              # Pin the upstream identity, not just "signed by our CA".
+              match_typed_subject_alt_names:
+                - san_type: DNS
+                  matcher: { exact: inventory }
