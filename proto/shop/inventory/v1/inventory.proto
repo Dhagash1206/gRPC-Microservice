@@ -1,0 +1,90 @@
+syntax = "proto3";
+
+package shop.inventory.v1;
+
+import "google/api/annotations.proto";
+
+option go_package = "grpcshop/gen/shop/inventory/v1;inventoryv1";
+
+// Owns the product catalog and stock levels.
+service InventoryService {
+  // Batch lookup so callers avoid N+1 round trips. NOT_FOUND if any SKU is unknown.
+  rpc BatchGetProducts(BatchGetProductsRequest) returns (BatchGetProductsResponse);
+
+  // Server streaming: streams the full catalog. Public via the edge as GET /v1/products.
+  rpc ListProducts(ListProductsRequest) returns (stream Product) {
+    option (google.api.http) = {get: "/v1/products"};
+  }
+
+  // All-or-nothing hold that expires after a TTL unless committed. Idempotent per
+  // order_id. FAILED_PRECONDITION if any item lacks stock or the order was released.
+  rpc ReserveStock(ReserveStockRequest) returns (ReserveStockResponse);
+
+  // Makes the hold permanent (stops expiry). FAILED_PRECONDITION if the hold was
+  // released or has expired. Idempotent.
+  rpc CommitReservation(CommitReservationRequest) returns (CommitReservationResponse);
+
+  // Saga compensation: returns held or committed stock. If nothing was reserved yet,
+  // records a fence so a late ReserveStock for the order is rejected. Idempotent.
+  rpc ReleaseStock(ReleaseStockRequest) returns (ReleaseStockResponse);
+
+  // Admin only (JWT role "admin", via the edge). Adds stock to a product.
+  rpc RestockProduct(RestockProductRequest) returns (Product) {
+    option (google.api.http) = {
+      post: "/v1/products/{sku}:restock"
+      body: "*"
+    };
+  }
+}
+
+message Product {
+  string sku = 1;
+  string name = 2;
+  int64 unit_price_cents = 3;
+  int32 available_quantity = 4;
+}
+
+message StockItem {
+  string sku = 1;
+  int32 quantity = 2;
+}
+
+message BatchGetProductsRequest {
+  repeated string skus = 1;
+}
+
+message BatchGetProductsResponse {
+  repeated Product products = 1;
+}
+
+message ListProductsRequest {}
+
+message ReserveStockRequest {
+  string order_id = 1;
+  repeated StockItem items = 2;
+}
+
+message ReserveStockResponse {
+  string reservation_id = 1;
+}
+
+message CommitReservationRequest {
+  string order_id = 1;
+}
+
+message CommitReservationResponse {}
+
+message ReleaseStockRequest {
+  // Releases are keyed by order so they also work when ReserveStock's outcome is unknown.
+  reserved 1;
+  reserved "reservation_id";
+  string order_id = 2;
+}
+
+message ReleaseStockResponse {}
+
+message RestockProductRequest {
+  string sku = 1;
+  // 1..100000; the resulting stock may not exceed 1000000.
+  int32 quantity = 2;
+}

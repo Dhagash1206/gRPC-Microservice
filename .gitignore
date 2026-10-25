@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.DS_Store
+# Dev secrets: regenerate with `make certs`
+certs/
+# Generated (Go stubs in go/gen are committed)
+python/src/shop/
+envoy/descriptors.pb

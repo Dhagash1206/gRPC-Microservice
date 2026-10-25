@@ -1,0 +1,11 @@
+[project]
+name = "grpcshop-python-services"
+version = "0.1.0"
+description = "Inventory and Payment gRPC services"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = ["e2e: runs against the docker compose stack (make e2e)"]
+addopts = "-m 'not e2e'"

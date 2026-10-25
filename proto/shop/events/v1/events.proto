@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package shop.events.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "grpcshop/gen/shop/events/v1;eventsv1";
+
+// Published to the "shop.events" topic exchange with routing key "order.confirmed".
+message OrderConfirmed {
+  // Unique per event; consumers use it to deduplicate at-least-once delivery.
+  string event_id = 1;
+  string order_id = 2;
+  string customer_id = 3;
+  int64 total_cents = 4;
+  int32 item_count = 5;
+  google.protobuf.Timestamp occurred_at = 6;
+}
+
+// Published with routing key "order.cancelled".
+message OrderCancelled {
+  string event_id = 1;
+  string order_id = 2;
+  string customer_id = 3;
+  int64 refunded_cents = 4;
+  google.protobuf.Timestamp occurred_at = 5;
+}

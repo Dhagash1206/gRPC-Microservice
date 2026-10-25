@@ -1,0 +1,17 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files: [/etc/prometheus/alerts.yml]
+
+scrape_configs:
+  # Application metrics and span-derived RED metrics; job = service name.
+  - job_name: otel-collector
+    honor_labels: true
+    static_configs: [{ targets: ["otel-collector:8889"] }]
+  - job_name: envoy
+    metrics_path: /stats/prometheus
+    static_configs: [{ targets: ["envoy:9902"] }]
+  - job_name: rabbitmq
+    metrics_path: /metrics/per-object
+    static_configs: [{ targets: ["rabbitmq:15692"] }]
