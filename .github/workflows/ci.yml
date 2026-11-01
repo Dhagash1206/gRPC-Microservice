@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # Scripts (and the pytest fixture that runs gen_certs.sh) default to .venv/bin/python, which CI does not create.
+  PYTHON: python
+
 jobs:
   go:
     runs-on: ubuntu-latest
@@ -41,7 +45,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r python/requirements-dev.txt
       - name: Generate Python stubs
-        run: PYTHON=python ./scripts/generate_protos.sh python
+        run: ./scripts/generate_protos.sh python
       - name: Test (real Postgres via testcontainers)
         working-directory: python
         run: python -m pytest
@@ -60,8 +64,8 @@ jobs:
         run: pip install -r python/requirements-dev.txt
       - name: Generate dev certificates and Python stubs
         run: |
-          PYTHON=python ./scripts/gen_certs.sh
-          PYTHON=python ./scripts/generate_protos.sh python
+          ./scripts/gen_certs.sh
+          ./scripts/generate_protos.sh python
       - name: Start the stack
         run: docker compose up --build --detach --wait --wait-timeout 300
       - name: End-to-end tests
