@@ -33,6 +33,8 @@ CA_FILE = PROJECT_ROOT / "certs/ca.crt"
 EDGE_HOST = os.environ.get("E2E_EDGE_HOST", "localhost:8443")
 BASE_URL = f"https://{EDGE_HOST}"
 MAILPIT_URL = os.environ.get("E2E_MAILPIT_URL", "http://127.0.0.1:8025")
+JAEGER_URL = os.environ.get("E2E_JAEGER_URL", "http://127.0.0.1:16686")
+PROMETHEUS_URL = os.environ.get("E2E_PROMETHEUS_URL", "http://127.0.0.1:9090")
 
 _dev_auth_spec = importlib.util.spec_from_file_location("dev_auth", PROJECT_ROOT / "scripts/dev_auth.py")
 dev_auth = importlib.util.module_from_spec(_dev_auth_spec)
@@ -90,6 +92,53 @@ def wait_for_email(recipient_prefix: str, subject_fragment: str, timeout_seconds
             return messages[0]
         time.sleep(0.5)
     pytest.fail(f"no email to {recipient_prefix} with subject containing {subject_fragment!r}")
+
+
+def get_json(url: str) -> dict:
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:
+            return json.loads(response.read())
+    except urllib.error.HTTPError as http_error:
+        return json.loads(http_error.read())
+
+
+def poll(fetch, timeout_seconds: float, interval_seconds: float = 1.0):
+    """Returns the first truthy fetch() result, or the last one once the timeout passes."""
+    deadline = time.monotonic() + timeout_seconds
+    result = fetch()
+    while not result and time.monotonic() < deadline:
+        time.sleep(interval_seconds)
+        result = fetch()
+    return result
+
+
+def services_in_trace_of_request(request_id: str) -> set[str]:
+    """Finds the trace whose order span carries request_id, and returns every service in it."""
+    utc_now = time.time()
+    window = {
+        "query.start_time_min": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(utc_now - 300)),
+        "query.start_time_max": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(utc_now + 60)),
+    }
+    query = urllib.parse.urlencode(
+        {"query.service_name": "order", "query.attributes": json.dumps({"request.id": request_id}), **window}
+    )
+    found = get_json(f"{JAEGER_URL}/api/v3/traces?{query}").get("result")
+    if not found:
+        return set()
+    trace_id = found["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["traceId"]
+    whole_trace = get_json(f"{JAEGER_URL}/api/v3/traces/{trace_id}").get("result", {"resourceSpans": []})
+    return {
+        attribute["value"]["stringValue"]
+        for resource_spans in whole_trace["resourceSpans"]
+        for attribute in resource_spans["resource"]["attributes"]
+        if attribute["key"] == "service.name"
+    }
+
+
+def prometheus_value(expression: str) -> float:
+    query = urllib.parse.urlencode({"query": expression})
+    results = get_json(f"{PROMETHEUS_URL}/api/v1/query?{query}")["data"]["result"]
+    return float(results[0]["value"][1]) if results else 0.0
 
 
 def compose_exec(service: str, *command: str) -> subprocess.CompletedProcess:
@@ -294,6 +343,49 @@ def test_confirmation_email_is_delivered():
     _, order = create_order(issue_token(customer_id), {"MOUSE": 1})
     message = wait_for_email(customer_id, order["id"])
     assert message["To"][0]["Address"] == f"{customer_id}@customers.grpcshop.local"
+
+
+# ---- Observability ----
+
+
+def test_one_trace_spans_every_service_including_the_async_email():
+    token = issue_token(unique_customer("traced"))
+    status_code, order, response_headers = http_request(
+        "POST", "/v1/orders", token=token, body={"items": [{"sku": "MOUSE", "quantity": 1}]}
+    )
+    assert status_code == 200, order
+
+    expected_services = {"envoy", "order", "inventory", "payment", "notification"}
+    latest_services: set[str] = set()
+
+    def trace_is_complete() -> bool:
+        nonlocal latest_services
+        latest_services = services_in_trace_of_request(response_headers["x-request-id"])
+        return latest_services >= expected_services
+
+    assert poll(trace_is_complete, timeout_seconds=30), f"trace only covers {sorted(latest_services)}"
+
+
+def test_checkout_metrics_and_alert_rules_reach_prometheus():
+    checkouts_before = prometheus_value("sum(grpcshop_checkout_outcomes_total)")
+    published_before = prometheus_value("sum(grpcshop_outbox_published_total)")
+    status_code, order = create_order(issue_token(unique_customer("metered")), {"MOUSE": 1})
+    assert status_code == 200, order
+
+    # Collector flush (15 s) plus Prometheus scrape (15 s) bounds how long a new sample takes.
+    assert poll(lambda: prometheus_value("sum(grpcshop_checkout_outcomes_total)") > checkouts_before, 60, 2)
+    assert poll(lambda: prometheus_value("sum(grpcshop_outbox_published_total)") > published_before, 60, 2)
+
+    rule_names = {
+        rule["name"] for group in get_json(f"{PROMETHEUS_URL}/api/v1/rules")["data"]["groups"] for rule in group["rules"]
+    }
+    assert {
+        "OutboxNotDraining", "DeadLettersWaiting", "CompensationFailing", "HighServerErrorRatio", "TelemetryPipelineDown",
+    } <= rule_names
+    targets = get_json(f"{PROMETHEUS_URL}/api/v1/targets")["data"]["activeTargets"]
+    assert targets and all(target["health"] == "up" for target in targets), [
+        (target["labels"]["job"], target["health"]) for target in targets
+    ]
 
 
 def test_native_grpc_clients_use_the_same_edge():
