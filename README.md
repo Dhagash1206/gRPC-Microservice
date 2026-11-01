@@ -10,7 +10,7 @@
 ![Envoy](https://img.shields.io/badge/Envoy-edge-AC6199?logo=envoyproxy&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-4169E1?logo=postgresql&logoColor=white)
 ![RabbitMQ](https://img.shields.io/badge/RabbitMQ-events-FF6600?logo=rabbitmq&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-141%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-153%20passing-brightgreen)
 
 </div>
 
@@ -84,8 +84,8 @@ Every endpoint works as REST/JSON or native gRPC through the same Envoy port.
 ## Testing
 
 ```bash
-make test   # 58 Go + 48 Python integration tests (real Postgres)
-make e2e    # 35 end-to-end tests through Envoy
+make test   # 68 Go + 48 Python integration tests (real Postgres, RabbitMQ)
+make e2e    # 37 end-to-end tests through Envoy
 ```
 
 ## Learn more
