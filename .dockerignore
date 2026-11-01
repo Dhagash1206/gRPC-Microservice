@@ -3,6 +3,6 @@
 certs
 **/__pycache__
 **/.pytest_cache
-python/src/shop
-python/tests
-envoy/descriptors.pb
+services-python/src/shop
+services-python/tests
+gateway/descriptors.pb

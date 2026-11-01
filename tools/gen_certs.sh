@@ -44,7 +44,7 @@ rm -f ca.srl
 
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out jwt_private.pem 2>/dev/null
 openssl pkey -in jwt_private.pem -pubout -out jwt_public.pem
-"$PYTHON" "$PROJECT_ROOT/scripts/dev_auth.py" jwks --public-key jwt_public.pem > jwks.json
+"$PYTHON" "$PROJECT_ROOT/tools/dev_auth.py" jwks --public-key jwt_public.pem > jwks.json
 
 chmod 644 ./*
 echo "certs + JWT keys -> $OUT_DIR"

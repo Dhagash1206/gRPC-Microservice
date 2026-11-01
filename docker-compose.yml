@@ -27,8 +27,8 @@ services:
     environment: { TLS_NAME: inventory-db, APP_ROLE: inventory, APP_DATABASE: inventory, POSTGRES_HOST_AUTH_METHOD: trust }
     volumes:
       - ./certs:/certs:ro
-      - ./deploy/postgres:/deploy:ro
-      - ./deploy/postgres/init-app-role.sh:/docker-entrypoint-initdb.d/10-init-app-role.sh:ro
+      - ./infra/postgres:/deploy:ro
+      - ./infra/postgres/init-app-role.sh:/docker-entrypoint-initdb.d/10-init-app-role.sh:ro
       - inventory-db:/var/lib/postgresql/data
     networks: [inventory-data]
 
@@ -37,8 +37,8 @@ services:
     environment: { TLS_NAME: payment-db, APP_ROLE: payment, APP_DATABASE: payment, POSTGRES_HOST_AUTH_METHOD: trust }
     volumes:
       - ./certs:/certs:ro
-      - ./deploy/postgres:/deploy:ro
-      - ./deploy/postgres/init-app-role.sh:/docker-entrypoint-initdb.d/10-init-app-role.sh:ro
+      - ./infra/postgres:/deploy:ro
+      - ./infra/postgres/init-app-role.sh:/docker-entrypoint-initdb.d/10-init-app-role.sh:ro
       - payment-db:/var/lib/postgresql/data
     networks: [payment-data]
 
@@ -47,8 +47,8 @@ services:
     environment: { TLS_NAME: order-db, APP_ROLE: order, APP_DATABASE: order, POSTGRES_HOST_AUTH_METHOD: trust }
     volumes:
       - ./certs:/certs:ro
-      - ./deploy/postgres:/deploy:ro
-      - ./deploy/postgres/init-app-role.sh:/docker-entrypoint-initdb.d/10-init-app-role.sh:ro
+      - ./infra/postgres:/deploy:ro
+      - ./infra/postgres/init-app-role.sh:/docker-entrypoint-initdb.d/10-init-app-role.sh:ro
       - order-db:/var/lib/postgresql/data
     networks: [order-data]
 
@@ -57,8 +57,8 @@ services:
     environment: { TLS_NAME: notification-db, APP_ROLE: notification, APP_DATABASE: notification, POSTGRES_HOST_AUTH_METHOD: trust }
     volumes:
       - ./certs:/certs:ro
-      - ./deploy/postgres:/deploy:ro
-      - ./deploy/postgres/init-app-role.sh:/docker-entrypoint-initdb.d/10-init-app-role.sh:ro
+      - ./infra/postgres:/deploy:ro
+      - ./infra/postgres/init-app-role.sh:/docker-entrypoint-initdb.d/10-init-app-role.sh:ro
       - notification-db:/var/lib/postgresql/data
     networks: [notification-data]
 
@@ -67,9 +67,9 @@ services:
     hostname: rabbitmq # fixed node name, so the data volume survives container recreation
     volumes:
       - ./certs:/certs:ro
-      - ./deploy/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
-      - ./deploy/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
-      - ./deploy/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+      - ./infra/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ./infra/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+      - ./infra/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
       - rabbitmq:/var/lib/rabbitmq
     ports: ["127.0.0.1:15672:15672"] # management UI, admin/admin (dev only)
     networks: [events, broker-metrics, public] # public only so the UI port can be published
@@ -91,7 +91,7 @@ services:
 
   inventory:
     image: grpcshop-python:dev
-    build: { context: ., dockerfile: python/Dockerfile }
+    build: { context: ., dockerfile: services-python/Dockerfile }
     command: ["python", "-m", "inventory_service.main"]
     environment:
       OTEL_COLLECTOR_ADDR: otel-collector:4317
@@ -110,7 +110,7 @@ services:
 
   payment:
     image: grpcshop-python:dev
-    build: { context: ., dockerfile: python/Dockerfile }
+    build: { context: ., dockerfile: services-python/Dockerfile }
     command: ["python", "-m", "payment_service.main"]
     environment:
       OTEL_COLLECTOR_ADDR: otel-collector:4317
@@ -128,7 +128,7 @@ services:
       payment-db: { condition: service_healthy }
 
   order:
-    build: { context: ./go, args: { SERVICE: order } }
+    build: { context: ./services-go, args: { SERVICE: order } }
     environment:
       OTEL_COLLECTOR_ADDR: otel-collector:4317
       PORT: "50051"
@@ -154,7 +154,7 @@ services:
       notification: { condition: service_started }
 
   notification:
-    build: { context: ./go, args: { SERVICE: notification } }
+    build: { context: ./services-go, args: { SERVICE: notification } }
     environment:
       OTEL_COLLECTOR_ADDR: otel-collector:4317
       RABBITMQ_URL: amqps://rabbitmq:5671/
@@ -171,7 +171,7 @@ services:
       mailpit: { condition: service_started }
 
   envoy:
-    build: { context: ., dockerfile: envoy/Dockerfile }
+    build: { context: ., dockerfile: gateway/Dockerfile }
     ports: ["8443:8443"]
     volumes: ["./certs:/etc/envoy/certs:ro"]
     networks: [public, edge, observability]
@@ -183,7 +183,7 @@ services:
     image: otel/opentelemetry-collector-contrib:0.163.2
     command: ["--config=/etc/otelcol/config.yaml"]
     volumes:
-      - ./deploy/otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
+      - ./infra/otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
       - ./certs:/certs:ro
     networks: [observability]
 
@@ -195,7 +195,7 @@ services:
   prometheus:
     image: prom/prometheus:v3.15.1
     volumes:
-      - ./deploy/prometheus:/etc/prometheus:ro
+      - ./infra/prometheus:/etc/prometheus:ro
     ports: ["127.0.0.1:9090:9090"] # metrics + alerts UI (dev only)
     networks: [observability, broker-metrics, public]
 
@@ -207,8 +207,8 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: admin # dev only
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/grpcshop.json
     volumes:
-      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
     ports: ["127.0.0.1:3001:3000"] # dashboards (dev only)
     networks: [observability, public]
     depends_on: [prometheus, jaeger]

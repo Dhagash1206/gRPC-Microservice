@@ -1,4 +1,4 @@
-# Build context: go/. Pick the binary with --build-arg SERVICE=order|notification.
+# Build context: services-go/. Pick the binary with --build-arg SERVICE=order|notification.
 FROM golang:1.26 AS build
 WORKDIR /src
 COPY go.mod go.sum ./

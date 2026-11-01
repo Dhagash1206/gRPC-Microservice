@@ -37,7 +37,7 @@ class RunningService:
 @pytest.fixture(scope="session")
 def certs_dir(tmp_path_factory) -> pathlib.Path:
     output_dir = tmp_path_factory.mktemp("certs")
-    subprocess.run([PROJECT_ROOT / "scripts/gen_certs.sh", output_dir], check=True, capture_output=True)
+    subprocess.run([PROJECT_ROOT / "tools/gen_certs.sh", output_dir], check=True, capture_output=True)
     return output_dir
 
 

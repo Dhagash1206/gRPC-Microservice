@@ -36,7 +36,7 @@ MAILPIT_URL = os.environ.get("E2E_MAILPIT_URL", "http://127.0.0.1:8025")
 JAEGER_URL = os.environ.get("E2E_JAEGER_URL", "http://127.0.0.1:16686")
 PROMETHEUS_URL = os.environ.get("E2E_PROMETHEUS_URL", "http://127.0.0.1:9090")
 
-_dev_auth_spec = importlib.util.spec_from_file_location("dev_auth", PROJECT_ROOT / "scripts/dev_auth.py")
+_dev_auth_spec = importlib.util.spec_from_file_location("dev_auth", PROJECT_ROOT / "tools/dev_auth.py")
 dev_auth = importlib.util.module_from_spec(_dev_auth_spec)
 _dev_auth_spec.loader.exec_module(dev_auth)
 

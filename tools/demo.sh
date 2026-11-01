@@ -12,8 +12,8 @@ call() {
   curl -sS --cacert "$PROJECT_ROOT/certs/ca.crt" -w '\n[HTTP %{http_code}]\n' "$@"
 }
 
-token="$("$PYTHON" "$PROJECT_ROOT/scripts/dev_auth.py" token --sub customer-42)"
-other_token="$("$PYTHON" "$PROJECT_ROOT/scripts/dev_auth.py" token --sub customer-7)"
+token="$("$PYTHON" "$PROJECT_ROOT/tools/dev_auth.py" token --sub customer-42)"
+other_token="$("$PYTHON" "$PROJECT_ROOT/tools/dev_auth.py" token --sub customer-7)"
 
 call "List products (public, server-streaming RPC as a JSON array)" "$BASE_URL/v1/products"
 
