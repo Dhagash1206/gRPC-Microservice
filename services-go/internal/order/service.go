@@ -9,7 +9,8 @@
 //
 // On failure the order moves to COMPENSATING, the charge is cancelled and the
 // stock released (both fence late-arriving calls), then it becomes FAILED. If
-// this process dies mid-saga, RecoveryWorker finishes the compensation.
+// this process dies mid-saga, RecoveryWorker finishes it: forward if the customer
+// was already charged, otherwise by compensating.
 package order
 
 import (
@@ -129,6 +130,9 @@ func (service *Service) CreateOrder(ctx context.Context, request *orderv1.Create
 		return nil, service.downstreamError(ctx, "inventory", err)
 	}
 
+	if err := checkSingleCurrency(productsResponse.GetProducts()); err != nil {
+		return nil, err
+	}
 	order := service.newPendingOrder(customerID, productsResponse.GetProducts(), quantitiesBySKU)
 	err = service.repository.CreatePendingOrder(ctx, order, idempotencyKey, requestHash)
 	if errors.Is(err, ErrDuplicateRequest) {
@@ -156,6 +160,7 @@ func (service *Service) CreateOrder(ctx context.Context, request *orderv1.Create
 	charge, err := callWithTimeout(ctx, service.downstreamTimeout, func(callCtx context.Context) (*paymentv1.ChargeResponse, error) {
 		return service.payment.Charge(callCtx, &paymentv1.ChargeRequest{
 			IdempotencyKey: orderID, CustomerId: customerID, AmountCents: order.GetTotalCents(),
+			CurrencyCode: order.GetCurrencyCode(),
 		})
 	})
 	if err != nil {
@@ -182,7 +187,12 @@ func (service *Service) CreateOrder(ctx context.Context, request *orderv1.Create
 		ReservationID: order.GetReservationId(), PaymentID: order.GetPaymentId(), Event: &event,
 	})
 	if errors.Is(err, ErrStatusConflict) {
-		// The recovery worker already took this order over and is undoing it.
+		// The recovery worker took this order over: it either completed it (the
+		// charge had succeeded) or is undoing it.
+		if recovered, loadErr := service.repository.GetOrder(ctx, orderID); loadErr == nil && recovered.GetStatus() == statusConfirmed {
+			recordCheckout(ctx, "confirmed")
+			return recovered, nil
+		}
 		recordCheckout(ctx, "aborted")
 		return nil, status.Error(codes.Aborted, "checkout timed out and was rolled back")
 	}
@@ -292,7 +302,7 @@ func (service *Service) CancelOrder(ctx context.Context, request *orderv1.Cancel
 		// The recovery worker retries CANCELLING orders, so this completes eventually.
 		return nil, status.Error(codes.Unavailable, "cancellation in progress; it will complete automatically")
 	}
-	if err := service.finishCancellation(cancelCtx, order.GetId(), order.GetCustomerId(), order.GetTotalCents()); err != nil &&
+	if err := service.finishCancellation(cancelCtx, order.GetId(), order.GetCustomerId(), order.GetTotalCents(), order.GetCurrencyCode()); err != nil &&
 		!errors.Is(err, ErrStatusConflict) {
 		return nil, status.Error(codes.Internal, "failed to record cancellation")
 	}
@@ -317,6 +327,8 @@ func (service *Service) newPendingOrder(customerID string, products []*inventory
 		Id:         uuid.NewString(),
 		CustomerId: customerID,
 		Status:     statusPending,
+		// checkSingleCurrency has ensured every product shares this currency.
+		CurrencyCode: products[0].GetCurrencyCode(),
 		// Postgres stores microseconds; truncate so every read returns the same value.
 		CreatedAt: timestamppb.New(service.now().Truncate(time.Microsecond)),
 	}
@@ -401,8 +413,8 @@ func (service *Service) compensate(ctx context.Context, orderID string, undo com
 	return nil
 }
 
-func (service *Service) finishCancellation(ctx context.Context, orderID, customerID string, refundedCents int64) error {
-	event, err := orderCancelledEvent(ctx, orderID, customerID, refundedCents, service.now(), grpcmw.RequestIDFromContext(ctx))
+func (service *Service) finishCancellation(ctx context.Context, orderID, customerID string, refundedCents int64, currencyCode string) error {
+	event, err := orderCancelledEvent(ctx, orderID, customerID, refundedCents, currencyCode, service.now(), grpcmw.RequestIDFromContext(ctx))
 	if err != nil {
 		return err
 	}
@@ -424,6 +436,25 @@ func (service *Service) downstreamError(ctx context.Context, downstreamName stri
 		return status.Error(codes.Internal, "failed to complete order")
 	}
 	return status.Errorf(codes.Unavailable, "%s service unavailable", downstreamName)
+}
+
+// checkSingleCurrency rejects carts whose products are priced in different
+// currencies: one charge can only be in one currency.
+func checkSingleCurrency(products []*inventoryv1.Product) error {
+	if len(products) == 0 {
+		return status.Error(codes.Internal, "inventory returned no products")
+	}
+	currencyCode := products[0].GetCurrencyCode()
+	if !validCurrencyCode.MatchString(currencyCode) {
+		return status.Error(codes.Internal, "product has no valid currency")
+	}
+	for _, product := range products[1:] {
+		if product.GetCurrencyCode() != currencyCode {
+			return status.Errorf(codes.InvalidArgument, "items are priced in different currencies (%s, %s); order them separately",
+				currencyCode, product.GetCurrencyCode())
+		}
+	}
+	return nil
 }
 
 func isDefiniteFailure(err error) bool {
@@ -475,6 +506,7 @@ func mergeItems(items []*orderv1.OrderItem) ([]string, map[string]int32, error) 
 var (
 	validIdempotencyKey = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 	validSKU            = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+	validCurrencyCode   = regexp.MustCompile(`^[A-Z]{3}$`)
 )
 
 // hashItems fingerprints the merged items so a reused idempotency key can be checked.

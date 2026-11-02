@@ -6,6 +6,7 @@ package outbox
 import (
 	"context"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -22,14 +23,17 @@ var (
 	tracer          = otel.Tracer("grpcshop/outbox")
 	meter           = otel.Meter("grpcshop/outbox")
 	publishedEvents metric.Int64Counter
+	parkedEvents    metric.Int64Counter
 )
 
 func init() {
 	publishedEvents, _ = meter.Int64Counter("grpcshop.outbox.published", metric.WithDescription("Events confirmed by the broker"))
+	parkedEvents, _ = meter.Int64Counter("grpcshop.outbox.parked", metric.WithDescription("Events set aside after too many rejected attempts"))
 }
 
 // RegisterBacklogMetrics reports how many events await publishing and how old the
 // oldest is: a growing age means the broker is unreachable or the relay is stuck.
+// Parked events are reported separately, since only an operator can resolve them.
 func RegisterBacklogMetrics(pool *pgxpool.Pool) error {
 	backlog, err := meter.Int64ObservableGauge("grpcshop.outbox.backlog", metric.WithDescription("Unpublished events"))
 	if err != nil {
@@ -40,18 +44,26 @@ func RegisterBacklogMetrics(pool *pgxpool.Pool) error {
 	if err != nil {
 		return err
 	}
+	parked, err := meter.Int64ObservableGauge("grpcshop.outbox.parked_backlog", metric.WithDescription("Parked events awaiting an operator"))
+	if err != nil {
+		return err
+	}
 	_, err = meter.RegisterCallback(func(ctx context.Context, observer metric.Observer) error {
-		var count int64
+		var count, parkedCount int64
 		var ageSeconds float64
-		err := pool.QueryRow(ctx, `SELECT count(*), coalesce(extract(epoch FROM now() - min(created_at)), 0)
-			FROM outbox WHERE published_at IS NULL`).Scan(&count, &ageSeconds)
+		err := pool.QueryRow(ctx, `SELECT
+				count(*) FILTER (WHERE parked_at IS NULL),
+				coalesce(extract(epoch FROM now() - min(created_at) FILTER (WHERE parked_at IS NULL)), 0),
+				count(*) FILTER (WHERE parked_at IS NOT NULL)
+			FROM outbox WHERE published_at IS NULL`).Scan(&count, &ageSeconds, &parkedCount)
 		if err != nil {
 			return err
 		}
 		observer.ObserveInt64(backlog, count)
 		observer.ObserveFloat64(oldestAge, ageSeconds)
+		observer.ObserveInt64(parked, parkedCount)
 		return nil
-	}, backlog, oldestAge)
+	}, backlog, oldestAge, parked)
 	return err
 }
 
@@ -65,28 +77,55 @@ type Message struct {
 }
 
 type Publisher interface {
-	// Publish returns the IDs of messages the broker durably accepted.
+	// Publish returns the IDs of messages the broker durably accepted. A nil error
+	// with a message missing from the result means the broker rejected it.
 	Publish(ctx context.Context, messages []Message) (publishedIDs []string, err error)
 }
+
+const (
+	// MaxAttempts is how many broker rejections an event gets before it is parked.
+	MaxAttempts = 10
+	// PublishedRetention is how long published events are kept for debugging.
+	PublishedRetention = 7 * 24 * time.Hour
+
+	maxFailureBackoff = 10 * time.Second
+	purgeInterval     = time.Hour
+	purgeBatchSize    = 1_000
+)
 
 type Relay struct {
 	pool         *pgxpool.Pool
 	publisher    Publisher
 	pollInterval time.Duration
 	batchSize    int
-	logger       *slog.Logger
+	// publishTimeout bounds one broker round trip; claimLease must exceed it so a
+	// claim never expires while its batch is still being published.
+	publishTimeout time.Duration
+	claimLease     time.Duration
+	logger         *slog.Logger
 }
 
 func NewRelay(pool *pgxpool.Pool, publisher Publisher, logger *slog.Logger) *Relay {
-	return &Relay{pool: pool, publisher: publisher, pollInterval: 500 * time.Millisecond, batchSize: 100, logger: logger}
+	return &Relay{
+		pool: pool, publisher: publisher, pollInterval: 500 * time.Millisecond, batchSize: 100,
+		publishTimeout: 15 * time.Second, claimLease: time.Minute, logger: logger,
+	}
 }
-
-const maxFailureBackoff = 10 * time.Second
 
 func (relay *Relay) Run(ctx context.Context) {
 	relay.logger.Info("outbox relay started")
 	failureBackoff := relay.pollInterval
+	nextPurge := time.Now()
 	for {
+		if time.Now().After(nextPurge) {
+			if purged, err := relay.PurgePublished(ctx, PublishedRetention); err != nil && ctx.Err() == nil {
+				relay.logger.Error("outbox purge failed", "error", err)
+			} else if purged > 0 {
+				relay.logger.Info("purged published events", "count", purged)
+			}
+			nextPurge = time.Now().Add(purgeInterval)
+		}
+
 		wait := relay.pollInterval
 		publishedCount, err := relay.publishBatch(ctx)
 		switch {
@@ -110,25 +149,63 @@ func (relay *Relay) Run(ctx context.Context) {
 	}
 }
 
-func (relay *Relay) publishBatch(ctx context.Context) (int, error) {
-	transaction, err := relay.pool.Begin(ctx)
-	if err != nil {
-		return 0, err
+// PurgePublished deletes events published longer ago than retention and returns how many.
+func (relay *Relay) PurgePublished(ctx context.Context, retention time.Duration) (int64, error) {
+	var total int64
+	for {
+		// Small batches keep each delete's locks and WAL volume short.
+		result, err := relay.pool.Exec(ctx, `DELETE FROM outbox WHERE id IN (
+			SELECT id FROM outbox WHERE published_at < now() - make_interval(secs => $1) LIMIT $2)`,
+			retention.Seconds(), purgeBatchSize)
+		if err != nil {
+			return total, err
+		}
+		total += result.RowsAffected()
+		if result.RowsAffected() < purgeBatchSize {
+			return total, nil
+		}
 	}
-	defer transaction.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck
+}
 
-	// SKIP LOCKED lets several order replicas relay concurrently without double-sending a row.
-	rows, err := transaction.Query(ctx, `
-		SELECT id::text, routing_key, payload, request_id, trace_headers FROM outbox
-		WHERE published_at IS NULL ORDER BY created_at LIMIT $1 FOR UPDATE SKIP LOCKED`, relay.batchSize)
+type claimedMessage struct {
+	Message
+	createdAt time.Time
+}
+
+// claimBatch leases the oldest publishable events in its own short transaction,
+// so no database transaction stays open while the broker is called.
+func (relay *Relay) claimBatch(ctx context.Context) ([]Message, error) {
+	// SKIP LOCKED plus the lease lets several order replicas relay concurrently without double-sending a row.
+	rows, err := relay.pool.Query(ctx, `
+		UPDATE outbox SET claimed_until = now() + make_interval(secs => $2)
+		WHERE id IN (
+			SELECT id FROM outbox
+			WHERE published_at IS NULL AND parked_at IS NULL AND (claimed_until IS NULL OR claimed_until < now())
+			ORDER BY created_at LIMIT $1 FOR UPDATE SKIP LOCKED)
+		RETURNING id::text, routing_key, payload, request_id, trace_headers, created_at`,
+		relay.batchSize, relay.claimLease.Seconds())
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	messages, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Message, error) {
-		var message Message
-		err := row.Scan(&message.ID, &message.RoutingKey, &message.Payload, &message.RequestID, &message.TraceHeaders)
+	claimed, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (claimedMessage, error) {
+		var message claimedMessage
+		err := row.Scan(&message.ID, &message.RoutingKey, &message.Payload, &message.RequestID, &message.TraceHeaders, &message.createdAt)
 		return message, err
 	})
+	if err != nil {
+		return nil, err
+	}
+	// RETURNING does not preserve the subquery's order.
+	sort.SliceStable(claimed, func(left, right int) bool { return claimed[left].createdAt.Before(claimed[right].createdAt) })
+	messages := make([]Message, len(claimed))
+	for index, message := range claimed {
+		messages[index] = message.Message
+	}
+	return messages, nil
+}
+
+func (relay *Relay) publishBatch(ctx context.Context) (int, error) {
+	messages, err := relay.claimBatch(ctx)
 	if err != nil || len(messages) == 0 {
 		return 0, err
 	}
@@ -149,7 +226,9 @@ func (relay *Relay) publishBatch(ctx context.Context) (int, error) {
 		spans[message.ID] = span
 	}
 
-	publishedIDs, publishErr := relay.publisher.Publish(ctx, messages)
+	publishCtx, cancel := context.WithTimeout(ctx, relay.publishTimeout)
+	publishedIDs, publishErr := relay.publisher.Publish(publishCtx, messages)
+	cancel()
 	publishedSet := make(map[string]bool, len(publishedIDs))
 	for _, messageID := range publishedIDs {
 		publishedSet[messageID] = true
@@ -161,22 +240,15 @@ func (relay *Relay) publishBatch(ctx context.Context) (int, error) {
 		span.End()
 	}
 	publishedEvents.Add(ctx, int64(len(publishedIDs)))
-	if publishedIDs == nil {
-		publishedIDs = []string{} // pgx encodes nil as NULL, which would break NOT (id = ANY(...)).
-	}
-	if len(publishedIDs) > 0 {
-		if _, err := transaction.Exec(ctx,
-			"UPDATE outbox SET published_at = now() WHERE id = ANY($1::uuid[])", publishedIDs); err != nil {
-			return 0, err
+
+	unpublishedIDs := make([]string, 0, len(messages)-len(publishedIDs))
+	for _, message := range messages {
+		if !publishedSet[message.ID] {
+			unpublishedIDs = append(unpublishedIDs, message.ID)
 		}
 	}
-	if len(publishedIDs) < len(messages) {
-		if _, err := transaction.Exec(ctx, `UPDATE outbox SET attempts = attempts + 1
-			WHERE id = ANY($1::uuid[]) AND NOT (id = ANY($2::uuid[]))`, messageIDs(messages), publishedIDs); err != nil {
-			return 0, err
-		}
-	}
-	if err := transaction.Commit(ctx); err != nil {
+	// Recorded even if ctx was cancelled mid-publish, so confirmed events are not resent.
+	if err := relay.recordOutcome(context.WithoutCancel(ctx), publishedIDs, unpublishedIDs, publishErr == nil); err != nil {
 		return 0, err
 	}
 	if len(publishedIDs) > 0 {
@@ -185,10 +257,47 @@ func (relay *Relay) publishBatch(ctx context.Context) (int, error) {
 	return len(publishedIDs), publishErr
 }
 
-func messageIDs(messages []Message) []string {
-	ids := make([]string, len(messages))
-	for index, message := range messages {
-		ids[index] = message.ID
-	}
-	return ids
+// recordOutcome marks confirmed events published and releases the claim on the rest.
+// Only a broker that answered but did not confirm (brokerReachable) counts as an
+// attempt: an outage says nothing about the events, so it must never park them.
+func (relay *Relay) recordOutcome(ctx context.Context, publishedIDs, unpublishedIDs []string, brokerReachable bool) error {
+	return pgx.BeginFunc(ctx, relay.pool, func(transaction pgx.Tx) error {
+		if len(publishedIDs) > 0 {
+			if _, err := transaction.Exec(ctx,
+				"UPDATE outbox SET published_at = now(), claimed_until = NULL WHERE id = ANY($1::uuid[])", publishedIDs); err != nil {
+				return err
+			}
+		}
+		if len(unpublishedIDs) == 0 {
+			return nil
+		}
+		if !brokerReachable {
+			_, err := transaction.Exec(ctx, "UPDATE outbox SET claimed_until = NULL WHERE id = ANY($1::uuid[])", unpublishedIDs)
+			return err
+		}
+		rows, err := transaction.Query(ctx, `
+			UPDATE outbox SET
+				attempts = attempts + 1,
+				claimed_until = NULL,
+				parked_at = CASE WHEN attempts + 1 >= $2 THEN now() END
+			WHERE id = ANY($1::uuid[])
+			RETURNING id::text, routing_key, parked_at IS NOT NULL`, unpublishedIDs, MaxAttempts)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var eventID, routingKey string
+			var parked bool
+			if err := rows.Scan(&eventID, &routingKey, &parked); err != nil {
+				return err
+			}
+			if parked {
+				parkedEvents.Add(ctx, 1, metric.WithAttributes(attribute.String("routing_key", routingKey)))
+				relay.logger.Error("event parked after repeated broker rejections", "event_id", eventID,
+					"routing_key", routingKey, "attempts", MaxAttempts)
+			}
+		}
+		return rows.Err()
+	})
 }

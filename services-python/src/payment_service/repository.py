@@ -14,7 +14,7 @@ STATUS_DECLINED = "declined"
 STATUS_REFUNDED = "refunded"
 STATUS_CANCELLED = "cancelled"
 
-PAYMENT_COLUMNS = "id, idempotency_key, customer_id, amount_cents, status, decline_reason"
+PAYMENT_COLUMNS = "id, idempotency_key, customer_id, amount_cents, status, decline_reason, currency_code"
 
 
 @dataclass(frozen=True)
@@ -25,6 +25,7 @@ class PaymentRecord:
     amount_cents: int | None
     status: str
     decline_reason: str | None
+    currency_code: str | None
 
 
 def new_payment_id() -> str:
@@ -36,20 +37,33 @@ class PaymentRepository:
         self._pool = pool
 
     def record_once(
-        self, idempotency_key: str, customer_id: str, amount_cents: int, status: str, decline_reason: str | None
+        self,
+        idempotency_key: str,
+        customer_id: str,
+        amount_cents: int,
+        currency_code: str,
+        status: str,
+        decline_reason: str | None,
     ) -> PaymentRecord:
         """Inserts the payment unless the key exists; returns whichever record is stored."""
         with self._pool.connection() as conn, conn.transaction():
             row = conn.execute(
-                f"INSERT INTO payments ({PAYMENT_COLUMNS}) VALUES (%s, %s, %s, %s, %s, %s) "
+                f"INSERT INTO payments ({PAYMENT_COLUMNS}) VALUES (%s, %s, %s, %s, %s, %s, %s) "
                 f"ON CONFLICT (idempotency_key) DO NOTHING RETURNING {PAYMENT_COLUMNS}",
-                (new_payment_id(), idempotency_key, customer_id, amount_cents, status, decline_reason),
+                (new_payment_id(), idempotency_key, customer_id, amount_cents, status, decline_reason, currency_code),
             ).fetchone()
             if row is None:
                 row = conn.execute(
                     f"SELECT {PAYMENT_COLUMNS} FROM payments WHERE idempotency_key = %s", (idempotency_key,)
                 ).fetchone()
         return PaymentRecord(*row)
+
+    def find(self, idempotency_key: str) -> PaymentRecord | None:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                f"SELECT {PAYMENT_COLUMNS} FROM payments WHERE idempotency_key = %s", (idempotency_key,)
+            ).fetchone()
+        return None if row is None else PaymentRecord(*row)
 
     def cancel(self, idempotency_key: str) -> str:
         """Returns the resulting status: cancelled (fenced), refunded, or declined."""

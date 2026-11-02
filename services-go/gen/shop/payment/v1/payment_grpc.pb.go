@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	PaymentService_Charge_FullMethodName       = "/shop.payment.v1.PaymentService/Charge"
 	PaymentService_CancelCharge_FullMethodName = "/shop.payment.v1.PaymentService/CancelCharge"
+	PaymentService_GetCharge_FullMethodName    = "/shop.payment.v1.PaymentService/GetCharge"
 )
 
 // PaymentServiceClient is the client API for PaymentService service.
@@ -34,6 +35,9 @@ type PaymentServiceClient interface {
 	// Saga compensation. Refunds a successful charge; if no charge exists yet, records
 	// a fence so a late Charge with this key fails. Idempotent.
 	CancelCharge(ctx context.Context, in *CancelChargeRequest, opts ...grpc.CallOption) (*CancelChargeResponse, error)
+	// Read-only: the stored outcome for idempotency_key. NOT_FOUND if neither a charge
+	// nor a fence exists. Lets saga recovery tell a paid order from an unpaid one.
+	GetCharge(ctx context.Context, in *GetChargeRequest, opts ...grpc.CallOption) (*GetChargeResponse, error)
 }
 
 type paymentServiceClient struct {
@@ -64,6 +68,16 @@ func (c *paymentServiceClient) CancelCharge(ctx context.Context, in *CancelCharg
 	return out, nil
 }
 
+func (c *paymentServiceClient) GetCharge(ctx context.Context, in *GetChargeRequest, opts ...grpc.CallOption) (*GetChargeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetChargeResponse)
+	err := c.cc.Invoke(ctx, PaymentService_GetCharge_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PaymentServiceServer is the server API for PaymentService service.
 // All implementations must embed UnimplementedPaymentServiceServer
 // for forward compatibility.
@@ -75,6 +89,9 @@ type PaymentServiceServer interface {
 	// Saga compensation. Refunds a successful charge; if no charge exists yet, records
 	// a fence so a late Charge with this key fails. Idempotent.
 	CancelCharge(context.Context, *CancelChargeRequest) (*CancelChargeResponse, error)
+	// Read-only: the stored outcome for idempotency_key. NOT_FOUND if neither a charge
+	// nor a fence exists. Lets saga recovery tell a paid order from an unpaid one.
+	GetCharge(context.Context, *GetChargeRequest) (*GetChargeResponse, error)
 	mustEmbedUnimplementedPaymentServiceServer()
 }
 
@@ -90,6 +107,9 @@ func (UnimplementedPaymentServiceServer) Charge(context.Context, *ChargeRequest)
 }
 func (UnimplementedPaymentServiceServer) CancelCharge(context.Context, *CancelChargeRequest) (*CancelChargeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CancelCharge not implemented")
+}
+func (UnimplementedPaymentServiceServer) GetCharge(context.Context, *GetChargeRequest) (*GetChargeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetCharge not implemented")
 }
 func (UnimplementedPaymentServiceServer) mustEmbedUnimplementedPaymentServiceServer() {}
 func (UnimplementedPaymentServiceServer) testEmbeddedByValue()                        {}
@@ -148,6 +168,24 @@ func _PaymentService_CancelCharge_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PaymentService_GetCharge_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetChargeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).GetCharge(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_GetCharge_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).GetCharge(ctx, req.(*GetChargeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PaymentService_ServiceDesc is the grpc.ServiceDesc for PaymentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -162,6 +200,10 @@ var PaymentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CancelCharge",
 			Handler:    _PaymentService_CancelCharge_Handler,
+		},
+		{
+			MethodName: "GetCharge",
+			Handler:    _PaymentService_GetCharge_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -28,8 +28,10 @@ type Product struct {
 	Name              string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
 	UnitPriceCents    int64                  `protobuf:"varint,3,opt,name=unit_price_cents,json=unitPriceCents,proto3" json:"unit_price_cents,omitempty"`
 	AvailableQuantity int32                  `protobuf:"varint,4,opt,name=available_quantity,json=availableQuantity,proto3" json:"available_quantity,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// ISO 4217 code of unit_price_cents, e.g. "USD".
+	CurrencyCode  string `protobuf:"bytes,5,opt,name=currency_code,json=currencyCode,proto3" json:"currency_code,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Product) Reset() {
@@ -88,6 +90,13 @@ func (x *Product) GetAvailableQuantity() int32 {
 		return x.AvailableQuantity
 	}
 	return 0
+}
+
+func (x *Product) GetCurrencyCode() string {
+	if x != nil {
+		return x.CurrencyCode
+	}
+	return ""
 }
 
 type StockItem struct {
@@ -408,6 +417,7 @@ func (x *CommitReservationRequest) GetOrderId() string {
 
 type CommitReservationResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
+	ReservationId string                 `protobuf:"bytes,1,opt,name=reservation_id,json=reservationId,proto3" json:"reservation_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -440,6 +450,13 @@ func (x *CommitReservationResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use CommitReservationResponse.ProtoReflect.Descriptor instead.
 func (*CommitReservationResponse) Descriptor() ([]byte, []int) {
 	return file_shop_inventory_v1_inventory_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *CommitReservationResponse) GetReservationId() string {
+	if x != nil {
+		return x.ReservationId
+	}
+	return ""
 }
 
 type ReleaseStockRequest struct {
@@ -579,12 +596,13 @@ var File_shop_inventory_v1_inventory_proto protoreflect.FileDescriptor
 
 const file_shop_inventory_v1_inventory_proto_rawDesc = "" +
 	"\n" +
-	"!shop/inventory/v1/inventory.proto\x12\x11shop.inventory.v1\x1a\x1cgoogle/api/annotations.proto\"\x88\x01\n" +
+	"!shop/inventory/v1/inventory.proto\x12\x11shop.inventory.v1\x1a\x1cgoogle/api/annotations.proto\"\xad\x01\n" +
 	"\aProduct\x12\x10\n" +
 	"\x03sku\x18\x01 \x01(\tR\x03sku\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12(\n" +
 	"\x10unit_price_cents\x18\x03 \x01(\x03R\x0eunitPriceCents\x12-\n" +
-	"\x12available_quantity\x18\x04 \x01(\x05R\x11availableQuantity\"9\n" +
+	"\x12available_quantity\x18\x04 \x01(\x05R\x11availableQuantity\x12#\n" +
+	"\rcurrency_code\x18\x05 \x01(\tR\fcurrencyCode\"9\n" +
 	"\tStockItem\x12\x10\n" +
 	"\x03sku\x18\x01 \x01(\tR\x03sku\x12\x1a\n" +
 	"\bquantity\x18\x02 \x01(\x05R\bquantity\"-\n" +
@@ -599,8 +617,9 @@ const file_shop_inventory_v1_inventory_proto_rawDesc = "" +
 	"\x14ReserveStockResponse\x12%\n" +
 	"\x0ereservation_id\x18\x01 \x01(\tR\rreservationId\"5\n" +
 	"\x18CommitReservationRequest\x12\x19\n" +
-	"\border_id\x18\x01 \x01(\tR\aorderId\"\x1b\n" +
-	"\x19CommitReservationResponse\"F\n" +
+	"\border_id\x18\x01 \x01(\tR\aorderId\"B\n" +
+	"\x19CommitReservationResponse\x12%\n" +
+	"\x0ereservation_id\x18\x01 \x01(\tR\rreservationId\"F\n" +
 	"\x13ReleaseStockRequest\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\tR\aorderIdJ\x04\b\x01\x10\x02R\x0ereservation_id\"\x16\n" +
 	"\x14ReleaseStockResponse\"E\n" +

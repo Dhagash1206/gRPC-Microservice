@@ -18,6 +18,7 @@ import (
 	eventsv1 "grpcshop/gen/shop/events/v1"
 	inventoryv1 "grpcshop/gen/shop/inventory/v1"
 	orderv1 "grpcshop/gen/shop/order/v1"
+	paymentv1 "grpcshop/gen/shop/payment/v1"
 	"grpcshop/internal/identity"
 	"grpcshop/internal/rabbitmq"
 )
@@ -41,8 +42,9 @@ type testFixture struct {
 
 func newFixture() *testFixture {
 	inventory := &fakeInventory{productsBySKU: map[string]*inventoryv1.Product{
-		"KEYBOARD": {Sku: "KEYBOARD", Name: "Keyboard", UnitPriceCents: 4_999},
-		"MOUSE":    {Sku: "MOUSE", Name: "Mouse", UnitPriceCents: 1_999},
+		"KEYBOARD": {Sku: "KEYBOARD", Name: "Keyboard", UnitPriceCents: 4_999, CurrencyCode: "USD"},
+		"MOUSE":    {Sku: "MOUSE", Name: "Mouse", UnitPriceCents: 1_999, CurrencyCode: "USD"},
+		"BAGUETTE": {Sku: "BAGUETTE", Name: "Baguette", UnitPriceCents: 299, CurrencyCode: "EUR"},
 	}}
 	payment := &fakePayment{}
 	repository := newMemoryRepository()
@@ -259,6 +261,109 @@ func TestRecoveryUndoesAbandonedPendingOrder(t *testing.T) {
 	}
 	assertStrings(t, "cancelled charges", fixture.payment.cancelledKeys, []string{order.GetId()})
 	assertStrings(t, "released", fixture.inventory.releasedIDs, []string{order.GetId()})
+}
+
+// storeAbandonedOrder saves a PENDING mouse order as if its request had crashed mid-saga.
+func (fixture *testFixture) storeAbandonedOrder(t *testing.T) *orderv1.Order {
+	t.Helper()
+	order := fixture.service.newPendingOrder("customer-1", []*inventoryv1.Product{fixture.inventory.productsBySKU["MOUSE"]}, map[string]int32{"MOUSE": 1})
+	if err := fixture.repository.CreatePendingOrder(context.Background(), order, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	return order
+}
+
+func TestRecoveryCompletesAbandonedOrderThatWasCharged(t *testing.T) {
+	fixture := newFixture()
+	order := fixture.storeAbandonedOrder(t)
+	fixture.payment.recordStatus(order.GetId(), paymentv1.ChargeStatus_CHARGE_STATUS_SUCCEEDED)
+
+	if finished := fixture.recovery.RecoverOnce(context.Background()); finished != 1 {
+		t.Fatalf("recovered %d orders, want 1", finished)
+	}
+
+	recovered, _ := fixture.repository.GetOrder(context.Background(), order.GetId())
+	if recovered.GetStatus() != statusConfirmed || recovered.GetReservationId() != "res_1" || recovered.GetPaymentId() != "pay_1" {
+		t.Fatalf("got %v, want CONFIRMED with reservation and payment IDs", recovered)
+	}
+	assertStrings(t, "committed", fixture.inventory.committedIDs, []string{order.GetId()})
+	if len(fixture.payment.cancelledKeys) != 0 || len(fixture.inventory.releasedIDs) != 0 {
+		t.Fatal("a paid order must be completed, not refunded")
+	}
+	if len(fixture.repository.savedEvents) != 1 || fixture.repository.savedEvents[0].RoutingKey != rabbitmq.OrderConfirmedRoutingKey {
+		t.Fatalf("events %v, want one order.confirmed", fixture.repository.savedEvents)
+	}
+}
+
+func TestRecoveryRefundsChargedOrderWhoseStockHoldExpired(t *testing.T) {
+	fixture := newFixture()
+	order := fixture.storeAbandonedOrder(t)
+	fixture.payment.recordStatus(order.GetId(), paymentv1.ChargeStatus_CHARGE_STATUS_SUCCEEDED)
+	fixture.inventory.commitErr = errHoldExpired
+
+	fixture.recovery.RecoverOnce(context.Background())
+
+	recovered, _ := fixture.repository.GetOrder(context.Background(), order.GetId())
+	if recovered.GetStatus() != statusFailed || !strings.Contains(recovered.GetFailureReason(), "stock hold expired") {
+		t.Fatalf("got %v, want FAILED because the hold expired", recovered)
+	}
+	assertStrings(t, "cancelled charges", fixture.payment.cancelledKeys, []string{order.GetId()})
+}
+
+func TestRecoveryLeavesPendingOrderWhenPaymentIsUnreachable(t *testing.T) {
+	fixture := newFixture()
+	order := fixture.storeAbandonedOrder(t)
+	fixture.payment.getChargeErr = errUnavailable
+
+	if finished := fixture.recovery.RecoverOnce(context.Background()); finished != 0 {
+		t.Fatalf("recovered %d orders, want 0", finished)
+	}
+	// Refunding blindly could undo a paid order; it must wait until the charge is known.
+	if got := fixture.repository.status(order.GetId()); got != statusPending {
+		t.Fatalf("status %v, want PENDING", got)
+	}
+	if len(fixture.payment.cancelledKeys) != 0 {
+		t.Fatal("charge cancelled while its outcome was unknown")
+	}
+}
+
+func TestRequestReturnsOrderThatRecoveryCompleted(t *testing.T) {
+	fixture := newFixture()
+	// Recovery completes the order while the request is committing stock.
+	fixture.inventory.beforeCommitReturns = func() { fixture.recovery.RecoverOnce(context.Background()) }
+
+	order, err := fixture.service.CreateOrder(customerContext("customer-1"), createRequest(map[string]int32{"MOUSE": 1}))
+
+	if err != nil || order.GetStatus() != statusConfirmed {
+		t.Fatalf("got %v, %v; want the confirmed order", order, err)
+	}
+	if len(fixture.repository.savedEvents) != 1 {
+		t.Fatalf("saved %d events, want exactly one order.confirmed", len(fixture.repository.savedEvents))
+	}
+}
+
+func TestOrderCarriesCurrencyToPaymentAndEvents(t *testing.T) {
+	fixture := newFixture()
+	order := fixture.createMouseOrder(t, "customer-1")
+
+	if order.GetCurrencyCode() != "USD" || fixture.payment.chargeRequests[0].GetCurrencyCode() != "USD" {
+		t.Fatalf("order currency %q, charge currency %q; want USD", order.GetCurrencyCode(), fixture.payment.chargeRequests[0].GetCurrencyCode())
+	}
+	confirmed := &eventsv1.OrderConfirmed{}
+	if err := proto.Unmarshal(fixture.repository.savedEvents[0].Payload, confirmed); err != nil || confirmed.GetCurrencyCode() != "USD" {
+		t.Fatalf("event currency %q (err %v), want USD", confirmed.GetCurrencyCode(), err)
+	}
+}
+
+func TestMixedCurrencyCartIsRejectedBeforeAnySideEffect(t *testing.T) {
+	fixture := newFixture()
+
+	_, err := fixture.service.CreateOrder(customerContext("customer-1"), createRequest(map[string]int32{"MOUSE": 1, "BAGUETTE": 2}))
+
+	assertCode(t, err, codes.InvalidArgument)
+	if len(fixture.repository.ordersByID) != 0 || len(fixture.inventory.reservedOrderIDs) != 0 || len(fixture.payment.chargeRequests) != 0 {
+		t.Fatal("a mixed-currency cart must be rejected before storing, reserving or charging")
+	}
 }
 
 func TestConfirmLosesRaceAgainstRecovery(t *testing.T) {

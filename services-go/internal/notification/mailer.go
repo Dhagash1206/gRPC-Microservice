@@ -29,15 +29,15 @@ type SMTPNotifier struct {
 func (notifier SMTPNotifier) SendOrderConfirmation(ctx context.Context, event *eventsv1.OrderConfirmed) error {
 	return notifier.send(ctx, event.GetCustomerId(),
 		fmt.Sprintf("Order %s confirmed", event.GetOrderId()),
-		fmt.Sprintf("Thanks for your order!\r\n\r\nOrder: %s\r\nItems: %d\r\nTotal: $%s\r\n",
-			event.GetOrderId(), event.GetItemCount(), formatCents(event.GetTotalCents())))
+		fmt.Sprintf("Thanks for your order!\r\n\r\nOrder: %s\r\nItems: %d\r\nTotal: %s\r\n",
+			event.GetOrderId(), event.GetItemCount(), formatMoney(event.GetTotalCents(), event.GetCurrencyCode())))
 }
 
 func (notifier SMTPNotifier) SendOrderCancellation(ctx context.Context, event *eventsv1.OrderCancelled) error {
 	return notifier.send(ctx, event.GetCustomerId(),
 		fmt.Sprintf("Order %s cancelled", event.GetOrderId()),
-		fmt.Sprintf("Your order %s was cancelled.\r\nRefunded: $%s\r\n",
-			event.GetOrderId(), formatCents(event.GetRefundedCents())))
+		fmt.Sprintf("Your order %s was cancelled.\r\nRefunded: %s\r\n",
+			event.GetOrderId(), formatMoney(event.GetRefundedCents(), event.GetCurrencyCode())))
 }
 
 func (notifier SMTPNotifier) send(ctx context.Context, customerID, subject, body string) (err error) {
@@ -97,6 +97,11 @@ func (notifier SMTPNotifier) send(ctx context.Context, customerID, subject, body
 	return client.Quit()
 }
 
-func formatCents(cents int64) string {
-	return fmt.Sprintf("%d.%02d", cents/100, cents%100)
+// formatMoney renders minor units as e.g. "19.99 USD". Events published before
+// currency_code existed were all in US dollars.
+func formatMoney(cents int64, currencyCode string) string {
+	if currencyCode == "" {
+		currencyCode = "USD"
+	}
+	return fmt.Sprintf("%d.%02d %s", cents/100, cents%100, currencyCode)
 }

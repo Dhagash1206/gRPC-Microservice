@@ -46,10 +46,11 @@ type PageCursor struct {
 
 // InFlightOrder is an order the recovery worker must finish.
 type InFlightOrder struct {
-	ID         string
-	CustomerID string
-	TotalCents int64
-	Status     orderv1.OrderStatus
+	ID           string
+	CustomerID   string
+	TotalCents   int64
+	CurrencyCode string
+	Status       orderv1.OrderStatus
 }
 
 type Repository interface {
@@ -63,7 +64,7 @@ type Repository interface {
 	// ListOrders returns up to limit orders older than after (nil = newest).
 	ListOrders(ctx context.Context, customerID string, after *PageCursor, limit int) ([]*orderv1.Order, error)
 	// ClaimInFlightOrders leases orders stuck in pending/compensating/cancelling for
-	// longer than staleAfter; pending ones are moved to compensating.
+	// longer than staleAfter. Statuses are unchanged; the caller decides what to do.
 	ClaimInFlightOrders(ctx context.Context, staleAfter time.Duration, limit int) ([]InFlightOrder, error)
 }
 
@@ -78,11 +79,11 @@ func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
 func (repository *PostgresRepository) CreatePendingOrder(ctx context.Context, order *orderv1.Order, idempotencyKey, requestHash string) error {
 	return pgx.BeginFunc(ctx, repository.pool, func(transaction pgx.Tx) error {
 		result, err := transaction.Exec(ctx, `
-			INSERT INTO orders (id, customer_id, total_cents, status, created_at, updated_at, idempotency_key, request_hash)
-			VALUES ($1, $2, $3, $4, $5, $5, NULLIF($6, ''), NULLIF($7, ''))
+			INSERT INTO orders (id, customer_id, total_cents, currency_code, status, created_at, updated_at, idempotency_key, request_hash)
+			VALUES ($1, $2, $3, $8, $4, $5, $5, NULLIF($6, ''), NULLIF($7, ''))
 			ON CONFLICT (customer_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`,
 			order.GetId(), order.GetCustomerId(), order.GetTotalCents(), statusName(order.GetStatus()),
-			order.GetCreatedAt().AsTime(), idempotencyKey, requestHash)
+			order.GetCreatedAt().AsTime(), idempotencyKey, requestHash, order.GetCurrencyCode())
 		if err != nil {
 			return err
 		}
@@ -134,13 +135,13 @@ func (repository *PostgresRepository) Apply(ctx context.Context, orderID string,
 	})
 }
 
-const orderColumns = `id::text, customer_id, total_cents, reservation_id, payment_id, created_at, status, failure_reason`
+const orderColumns = `id::text, customer_id, total_cents, currency_code, reservation_id, payment_id, created_at, status, failure_reason`
 
 func scanOrder(row pgx.Row) (*orderv1.Order, error) {
 	order := &orderv1.Order{}
 	var createdAt time.Time
 	var status string
-	if err := row.Scan(&order.Id, &order.CustomerId, &order.TotalCents, &order.ReservationId, &order.PaymentId,
+	if err := row.Scan(&order.Id, &order.CustomerId, &order.TotalCents, &order.CurrencyCode, &order.ReservationId, &order.PaymentId,
 		&createdAt, &status, &order.FailureReason); err != nil {
 		return nil, err
 	}
@@ -230,23 +231,20 @@ func (repository *PostgresRepository) attachLines(ctx context.Context, orders []
 func (repository *PostgresRepository) ClaimInFlightOrders(ctx context.Context, staleAfter time.Duration, limit int) ([]InFlightOrder, error) {
 	// Bumping updated_at is the lease: other replicas skip the row until it is stale again.
 	rows, err := repository.pool.Query(ctx, `
-		UPDATE orders SET
-			status = CASE WHEN status = 'pending' THEN 'compensating' ELSE status END,
-			failure_reason = CASE WHEN status = 'pending' THEN 'checkout did not complete' ELSE failure_reason END,
-			updated_at = now()
+		UPDATE orders SET updated_at = now()
 		WHERE id IN (
 			SELECT id FROM orders
 			WHERE status IN ('pending', 'compensating', 'cancelling')
 			  AND updated_at < now() - make_interval(secs => $1)
 			ORDER BY updated_at LIMIT $2 FOR UPDATE SKIP LOCKED)
-		RETURNING id::text, customer_id, total_cents, status`, staleAfter.Seconds(), limit)
+		RETURNING id::text, customer_id, total_cents, currency_code, status`, staleAfter.Seconds(), limit)
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (InFlightOrder, error) {
 		var inFlight InFlightOrder
 		var status string
-		err := row.Scan(&inFlight.ID, &inFlight.CustomerID, &inFlight.TotalCents, &status)
+		err := row.Scan(&inFlight.ID, &inFlight.CustomerID, &inFlight.TotalCents, &inFlight.CurrencyCode, &status)
 		inFlight.Status = statusFromName(status)
 		return inFlight, err
 	})

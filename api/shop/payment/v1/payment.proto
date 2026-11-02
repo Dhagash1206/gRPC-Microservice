@@ -13,6 +13,19 @@ service PaymentService {
   // Saga compensation. Refunds a successful charge; if no charge exists yet, records
   // a fence so a late Charge with this key fails. Idempotent.
   rpc CancelCharge(CancelChargeRequest) returns (CancelChargeResponse);
+
+  // Read-only: the stored outcome for idempotency_key. NOT_FOUND if neither a charge
+  // nor a fence exists. Lets saga recovery tell a paid order from an unpaid one.
+  rpc GetCharge(GetChargeRequest) returns (GetChargeResponse);
+}
+
+enum ChargeStatus {
+  CHARGE_STATUS_UNSPECIFIED = 0;
+  CHARGE_STATUS_SUCCEEDED = 1;
+  CHARGE_STATUS_DECLINED = 2;
+  CHARGE_STATUS_REFUNDED = 3;
+  // A fence: cancelled before any charge was made.
+  CHARGE_STATUS_CANCELLED = 4;
 }
 
 enum CancelOutcome {
@@ -36,8 +49,19 @@ message ChargeRequest {
   string idempotency_key = 1;
   string customer_id = 2;
   int64 amount_cents = 3;
+  // ISO 4217 code of amount_cents, e.g. "USD". Required.
+  string currency_code = 4;
 }
 
 message ChargeResponse {
   string payment_id = 1;
+}
+
+message GetChargeRequest {
+  string idempotency_key = 1;
+}
+
+message GetChargeResponse {
+  string payment_id = 1;
+  ChargeStatus status = 2;
 }

@@ -54,12 +54,17 @@ class ServerObservabilityInterceptor(grpc.ServerInterceptor):
             status_code = context.code() or default_code
             logger.info(
                 "[%s] rid=%s caller=%s %s -> %s (%.1f ms)",
-                self._service_name, request_id, ",".join(peer_common_names(context)) or "-",
-                method_name, status_code.name, elapsed_ms,
+                self._service_name,
+                request_id,
+                ",".join(peer_common_names(context)) or "-",
+                method_name,
+                status_code.name,
+                elapsed_ms,
             )
 
         def wrap_behavior(behavior, is_streaming_response):
             if is_streaming_response:
+
                 def wrapped_stream(request_or_iterator, context):
                     request_id_var.set(request_id)
                     trace.get_current_span().set_attribute("request.id", request_id)
@@ -110,6 +115,7 @@ class PeerAuthorizationInterceptor(grpc.ServerInterceptor):
 
         def wrap_behavior(behavior, is_streaming_response):
             if is_streaming_response:
+
                 def wrapped_stream(request_or_iterator, context):
                     authorize(context)
                     yield from behavior(request_or_iterator, context)

@@ -1,0 +1,8 @@
+version: "2"
+
+linters:
+  # errcheck, govet, ineffassign, staticcheck, unused
+  default: standard
+  exclusions:
+    # Unchecked Close() on teardown paths and fmt.Fprint* into in-memory writers.
+    presets: [std-error-handling]

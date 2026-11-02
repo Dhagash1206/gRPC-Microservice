@@ -60,8 +60,10 @@ func pendingOrder(customerID string, createdAt time.Time) *orderv1.Order {
 		CustomerId: customerID,
 		Status:     statusPending,
 		TotalCents: 1_999,
-		CreatedAt:  timestamppb.New(createdAt.Truncate(time.Microsecond)),
-		Lines:      []*orderv1.OrderLine{{Sku: "MOUSE", ProductName: "Mouse", Quantity: 1, UnitPriceCents: 1_999}},
+		// A non-default currency proves the column is written and read back.
+		CurrencyCode: "EUR",
+		CreatedAt:    timestamppb.New(createdAt.Truncate(time.Microsecond)),
+		Lines:        []*orderv1.OrderLine{{Sku: "MOUSE", ProductName: "Mouse", Quantity: 1, UnitPriceCents: 1_999}},
 	}
 }
 
@@ -181,14 +183,18 @@ func TestPostgresRepository(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(claimed) != 1 || claimed[0].ID != stale.GetId() || claimed[0].Status != statusCompensating {
-			t.Fatalf("claimed %+v, want only the stale order as COMPENSATING", claimed)
+		// Status is left alone: recovery decides whether to complete or undo the order.
+		if len(claimed) != 1 || claimed[0].ID != stale.GetId() || claimed[0].Status != statusPending || claimed[0].CurrencyCode != "EUR" {
+			t.Fatalf("claimed %+v, want only the stale order, still PENDING", claimed)
 		}
 		// The lease (fresh updated_at) hides it from an immediate second claim.
 		if reclaimed, _ := repository.ClaimInFlightOrders(ctx, time.Minute, 10); len(reclaimed) != 0 {
 			t.Fatalf("reclaimed %+v during lease", reclaimed)
 		}
-		// A request finishing late cannot confirm a claimed order.
+		// Once recovery starts compensating, a request finishing late cannot confirm the order.
+		if err := repository.Apply(ctx, stale.GetId(), Transition{From: statusPending, To: statusCompensating}); err != nil {
+			t.Fatal(err)
+		}
 		err = repository.Apply(ctx, stale.GetId(), Transition{From: statusPending, To: statusConfirmed})
 		if !errors.Is(err, ErrStatusConflict) {
 			t.Fatalf("late confirm: got %v, want ErrStatusConflict", err)

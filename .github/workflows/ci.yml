@@ -26,8 +26,9 @@ jobs:
           cache-dependency-path: services-go/go.sum
       - name: Vet
         run: go vet ./...
-      - name: Staticcheck
-        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
+      - name: Lint (golangci-lint, config in .golangci.yml)
+        # Built with the job's Go, so it understands the module's Go version.
+        run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6 run ./...
       - name: Vulnerability check
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
       - name: Test (race detector, real Postgres via testcontainers)
@@ -44,15 +45,37 @@ jobs:
           cache-dependency-path: services-python/requirements-dev.txt
       - name: Install dependencies
         run: pip install -r services-python/requirements-dev.txt
+      - name: Lint and format check (ruff)
+        run: |
+          ruff check services-python tools
+          ruff format --check services-python tools
       - name: Generate Python stubs
         run: ./tools/generate_protos.sh python
       - name: Test (real Postgres via testcontainers)
         working-directory: services-python
         run: python -m pytest
 
+  proto:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+          cache: false
+      - name: Lint (buf)
+        run: go run github.com/bufbuild/buf/cmd/buf@v1.50.0 lint
+      - name: No breaking changes against main
+        # --against-config: main may predate buf.yaml, so read it with this branch's module layout.
+        run: >-
+          go run github.com/bufbuild/buf/cmd/buf@v1.50.0 breaking
+          --against "https://github.com/${{ github.repository }}.git#branch=main"
+          --against-config buf.yaml
+
   e2e:
     runs-on: ubuntu-latest
-    needs: [go, python]
+    needs: [go, python, proto]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -1,7 +1,7 @@
 """Dev identity provider.
 
-  dev_auth.py jwks  --public-key certs/jwt_public.pem          -> JWKS JSON for Envoy
-  dev_auth.py token --sub customer-42 [--ttl-minutes 60] [--role admin]  -> signed RS256 JWT
+dev_auth.py jwks  --public-key certs/jwt_public.pem          -> JWKS JSON for Envoy
+dev_auth.py token --sub customer-42 [--ttl-minutes 60] [--role admin]  -> signed RS256 JWT
 """
 
 import argparse

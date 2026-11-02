@@ -10,7 +10,7 @@
 ![Envoy](https://img.shields.io/badge/Envoy-edge-AC6199?logo=envoyproxy&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-4169E1?logo=postgresql&logoColor=white)
 ![RabbitMQ](https://img.shields.io/badge/RabbitMQ-events-FF6600?logo=rabbitmq&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-153%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-169%20passing-brightgreen)
 
 </div>
 
@@ -75,8 +75,9 @@ Every endpoint works as REST/JSON or native gRPC through the same Envoy port.
 
 ## What it demonstrates
 
-- **Saga with recovery:** reserve, charge, commit; any failure is undone, and a recovery worker finishes orders interrupted by a crash.
-- **No double effects:** idempotent writes, client idempotency keys, a transactional outbox and deduplicated events.
+- **Saga with recovery:** reserve, charge, commit; any failure is undone, and a recovery worker completes paid orders interrupted by a crash and undoes the rest.
+- **No double effects:** idempotent writes, client idempotency keys, a transactional outbox (claimed before publishing, retries capped, old rows purged) and deduplicated events.
+- **Explicit currency:** every amount carries an ISO 4217 `currency_code`; mixed-currency carts are rejected.
 - **Zero-trust networking:** mTLS between all services, per-service caller allowlists, and certificate logins for Postgres and RabbitMQ.
 - **Hardened edge:** JWT validation, rate limits, body and input limits, and REST-to-gRPC transcoding in Envoy.
 - **Full observability:** OpenTelemetry traces across async hops, Prometheus metrics and alerts, and a Grafana dashboard.
@@ -84,7 +85,8 @@ Every endpoint works as REST/JSON or native gRPC through the same Envoy port.
 ## Testing
 
 ```bash
-make test   # 68 Go + 48 Python integration tests (real Postgres, RabbitMQ)
+make lint   # golangci-lint, ruff, buf
+make test   # 77 Go + 55 Python integration tests (real Postgres, RabbitMQ)
 make e2e    # 37 end-to-end tests through Envoy
 ```
 

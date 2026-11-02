@@ -72,6 +72,8 @@ message Order {
   OrderStatus status = 8;
   // Set for FAILED orders.
   string failure_reason = 9;
+  // ISO 4217 code that every *_cents amount on the order is in, e.g. "USD".
+  string currency_code = 10;
 }
 
 message CreateOrderRequest {

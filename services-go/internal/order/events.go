@@ -23,22 +23,24 @@ func orderConfirmedEvent(ctx context.Context, order *orderv1.Order, requestID st
 	}
 	eventID := uuid.NewString()
 	return newOutboxMessage(ctx, eventID, rabbitmq.OrderConfirmedRoutingKey, requestID, &eventsv1.OrderConfirmed{
-		EventId:    eventID,
-		OrderId:    order.GetId(),
-		CustomerId: order.GetCustomerId(),
-		TotalCents: order.GetTotalCents(),
-		ItemCount:  itemCount,
-		OccurredAt: order.GetCreatedAt(),
+		EventId:      eventID,
+		OrderId:      order.GetId(),
+		CustomerId:   order.GetCustomerId(),
+		TotalCents:   order.GetTotalCents(),
+		ItemCount:    itemCount,
+		OccurredAt:   order.GetCreatedAt(),
+		CurrencyCode: order.GetCurrencyCode(),
 	})
 }
 
-func orderCancelledEvent(ctx context.Context, orderID, customerID string, refundedCents int64, occurredAt time.Time, requestID string) (outbox.Message, error) {
+func orderCancelledEvent(ctx context.Context, orderID, customerID string, refundedCents int64, currencyCode string, occurredAt time.Time, requestID string) (outbox.Message, error) {
 	eventID := uuid.NewString()
 	return newOutboxMessage(ctx, eventID, rabbitmq.OrderCancelledRoutingKey, requestID, &eventsv1.OrderCancelled{
 		EventId:       eventID,
 		OrderId:       orderID,
 		CustomerId:    customerID,
 		RefundedCents: refundedCents,
+		CurrencyCode:  currencyCode,
 		OccurredAt:    timestamppb.New(occurredAt),
 	})
 }

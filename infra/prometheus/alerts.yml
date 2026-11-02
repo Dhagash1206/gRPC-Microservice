@@ -8,6 +8,12 @@ groups:
         annotations:
           summary: Order events are not reaching RabbitMQ (oldest unpublished event {{ $value | humanizeDuration }} old)
 
+      - alert: OutboxEventsParked
+        expr: grpcshop_outbox_parked_backlog > 0
+        labels: { severity: ticket }
+        annotations:
+          summary: "{{ $value }} order events were rejected by the broker 10 times and parked; fix the routing, then set parked_at and attempts back to NULL and 0"
+
       - alert: DeadLettersWaiting
         expr: sum by (queue) (rabbitmq_detailed_queue_messages_ready{queue=~".*\\.dlq"}) > 0
         for: 1m

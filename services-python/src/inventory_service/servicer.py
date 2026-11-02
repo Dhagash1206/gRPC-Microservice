@@ -23,7 +23,8 @@ logger = logging.getLogger(__name__)
 
 meter = metrics.get_meter("grpcshop.inventory")
 reservation_results = meter.create_counter(
-    "grpcshop.inventory.reservations", description="ReserveStock results: reserved, insufficient_stock, unknown_sku, fenced"
+    "grpcshop.inventory.reservations",
+    description="ReserveStock results: reserved, insufficient_stock, unknown_sku, fenced",
 )
 restocked_units = meter.create_counter("grpcshop.inventory.restocked_units", description="Units added by admins")
 
@@ -41,6 +42,7 @@ def to_product_message(record: ProductRecord) -> inventory_pb2.Product:
         name=record.name,
         unit_price_cents=record.unit_price_cents,
         available_quantity=record.available_quantity,
+        currency_code=record.currency_code,
     )
 
 
@@ -87,7 +89,9 @@ class InventoryServicer(inventory_pb2_grpc.InventoryServiceServicer):
                 context.abort(grpc.StatusCode.INVALID_ARGUMENT, f"quantity for {item.sku} must be positive")
             quantities_by_sku[item.sku] += item.quantity
             if quantities_by_sku[item.sku] > MAX_QUANTITY_PER_SKU:
-                context.abort(grpc.StatusCode.INVALID_ARGUMENT, f"quantity for {item.sku} exceeds {MAX_QUANTITY_PER_SKU}")
+                context.abort(
+                    grpc.StatusCode.INVALID_ARGUMENT, f"quantity for {item.sku} exceeds {MAX_QUANTITY_PER_SKU}"
+                )
 
         try:
             reservation_id = self._repository.reserve(request.order_id, dict(quantities_by_sku))
@@ -108,10 +112,10 @@ class InventoryServicer(inventory_pb2_grpc.InventoryServiceServicer):
     def CommitReservation(self, request, context):
         require_order_id(request.order_id, context)
         try:
-            self._repository.commit(request.order_id)
+            reservation_id = self._repository.commit(request.order_id)
         except ReservationNotCommittableError as error:
             context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(error))
-        return inventory_pb2.CommitReservationResponse()
+        return inventory_pb2.CommitReservationResponse(reservation_id=reservation_id)
 
     def ReleaseStock(self, request, context):
         require_order_id(request.order_id, context)

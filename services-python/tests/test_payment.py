@@ -4,14 +4,23 @@ import pytest
 from shop.payment.v1 import payment_pb2
 
 
-def charge(payment_stub, idempotency_key="key-1", customer_id="customer-1", amount_cents=500):
+def charge(payment_stub, idempotency_key="key-1", customer_id="customer-1", amount_cents=500, currency_code="USD"):
     return payment_stub.Charge(
-        payment_pb2.ChargeRequest(idempotency_key=idempotency_key, customer_id=customer_id, amount_cents=amount_cents)
+        payment_pb2.ChargeRequest(
+            idempotency_key=idempotency_key,
+            customer_id=customer_id,
+            amount_cents=amount_cents,
+            currency_code=currency_code,
+        )
     )
 
 
 def cancel(payment_stub, idempotency_key="key-1") -> int:
     return payment_stub.CancelCharge(payment_pb2.CancelChargeRequest(idempotency_key=idempotency_key)).outcome
+
+
+def charge_status(payment_stub, idempotency_key="key-1") -> int:
+    return payment_stub.GetCharge(payment_pb2.GetChargeRequest(idempotency_key=idempotency_key)).status
 
 
 def assert_charge_fails(payment_stub, code: grpc.StatusCode, **charge_args) -> str:
@@ -41,6 +50,36 @@ def test_decline_is_persisted_and_replayed(payment_stub):
 def test_reusing_key_with_different_amount_is_rejected(payment_stub):
     charge(payment_stub, amount_cents=500)
     assert_charge_fails(payment_stub, grpc.StatusCode.INVALID_ARGUMENT, amount_cents=900)
+
+
+def test_reusing_key_with_different_currency_is_rejected(payment_stub):
+    charge(payment_stub, currency_code="USD")
+    assert_charge_fails(payment_stub, grpc.StatusCode.INVALID_ARGUMENT, currency_code="EUR")
+
+
+@pytest.mark.parametrize("currency_code", ["", "usd", "US", "USDX", "U\x00D"])
+def test_malformed_currency_code_is_invalid(payment_stub, currency_code):
+    details = assert_charge_fails(payment_stub, grpc.StatusCode.INVALID_ARGUMENT, currency_code=currency_code)
+    assert "currency_code" in details
+
+
+def test_get_charge_reports_each_stored_outcome(payment_stub):
+    with pytest.raises(grpc.RpcError) as error_info:
+        charge_status(payment_stub, "never-charged")
+    assert error_info.value.code() == grpc.StatusCode.NOT_FOUND
+
+    paid = charge(payment_stub, idempotency_key="paid")
+    response = payment_stub.GetCharge(payment_pb2.GetChargeRequest(idempotency_key="paid"))
+    assert (response.payment_id, response.status) == (paid.payment_id, payment_pb2.CHARGE_STATUS_SUCCEEDED)
+
+    assert_charge_fails(payment_stub, grpc.StatusCode.FAILED_PRECONDITION, idempotency_key="big", amount_cents=150_000)
+    assert charge_status(payment_stub, "big") == payment_pb2.CHARGE_STATUS_DECLINED
+
+    cancel(payment_stub, "paid")
+    assert charge_status(payment_stub, "paid") == payment_pb2.CHARGE_STATUS_REFUNDED
+
+    cancel(payment_stub, "fenced")
+    assert charge_status(payment_stub, "fenced") == payment_pb2.CHARGE_STATUS_CANCELLED
 
 
 def test_missing_idempotency_key_is_invalid(payment_stub):

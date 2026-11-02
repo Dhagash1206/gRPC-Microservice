@@ -144,7 +144,10 @@ def prometheus_value(expression: str) -> float:
 def compose_exec(service: str, *command: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["docker", "compose", "exec", "-T", service, *command],
-        cwd=PROJECT_ROOT, capture_output=True, text=True, timeout=60,
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
 
 
@@ -228,8 +231,11 @@ def test_forged_identity_header_is_ignored():
     attacker = unique_customer("attacker")
     forged_payload = base64.urlsafe_b64encode(b'{"sub":"victim"}').rstrip(b"=").decode()
     status_code, order, _ = http_request(
-        "POST", "/v1/orders", token=issue_token(attacker),
-        body={"items": [{"sku": "MOUSE", "quantity": 1}]}, headers={"x-jwt-payload": forged_payload},
+        "POST",
+        "/v1/orders",
+        token=issue_token(attacker),
+        body={"items": [{"sku": "MOUSE", "quantity": 1}]},
+        headers={"x-jwt-payload": forged_payload},
     )
     assert status_code == 200, order
     assert order["customerId"] == attacker
@@ -377,10 +383,17 @@ def test_checkout_metrics_and_alert_rules_reach_prometheus():
     assert poll(lambda: prometheus_value("sum(grpcshop_outbox_published_total)") > published_before, 60, 2)
 
     rule_names = {
-        rule["name"] for group in get_json(f"{PROMETHEUS_URL}/api/v1/rules")["data"]["groups"] for rule in group["rules"]
+        rule["name"]
+        for group in get_json(f"{PROMETHEUS_URL}/api/v1/rules")["data"]["groups"]
+        for rule in group["rules"]
     }
     assert {
-        "OutboxNotDraining", "DeadLettersWaiting", "CompensationFailing", "HighServerErrorRatio", "TelemetryPipelineDown",
+        "OutboxNotDraining",
+        "OutboxEventsParked",
+        "DeadLettersWaiting",
+        "CompensationFailing",
+        "HighServerErrorRatio",
+        "TelemetryPipelineDown",
     } <= rule_names
     targets = get_json(f"{PROMETHEUS_URL}/api/v1/targets")["data"]["activeTargets"]
     assert targets and all(target["health"] == "up" for target in targets), [
@@ -412,7 +425,9 @@ def test_quantity_overflow_is_rejected():
     status_code, error_body = create_order(issue_token("overflow"), {"MOUSE": 2147483647})
     assert status_code == 400, error_body
     status_code, error_body, _ = http_request(
-        "POST", "/v1/orders", token=issue_token("overflow"),
+        "POST",
+        "/v1/orders",
+        token=issue_token("overflow"),
         body={"items": [{"sku": "MOUSE", "quantity": 2147483647}] * 2 + [{"sku": "MOUSE", "quantity": 3}]},
     )
     assert status_code == 400, error_body
@@ -431,9 +446,7 @@ def test_unknown_query_parameters_are_rejected():
 
 def test_internal_rpcs_are_not_routable():
     for rpc_path in ("/shop.inventory.v1.InventoryService/ReserveStock", "/shop.payment.v1.PaymentService/Charge"):
-        status_code, _, headers = http_request(
-            "POST", rpc_path, body=b"", headers={"content-type": "application/grpc"}
-        )
+        status_code, _, headers = http_request("POST", rpc_path, body=b"", headers={"content-type": "application/grpc"})
         assert headers.get("grpc-status") == "12" or status_code == 404, (rpc_path, status_code, headers)
 
 
@@ -446,12 +459,17 @@ def test_security_headers_are_set():
 
 def test_cors_preflight_allows_only_configured_origin():
     allowed_status, _, allowed_headers = http_request(
-        "OPTIONS", "/v1/orders",
+        "OPTIONS",
+        "/v1/orders",
         headers={"origin": "http://localhost:3000", "access-control-request-method": "POST"},
     )
-    assert allowed_headers.get("access-control-allow-origin") == "http://localhost:3000", (allowed_status, allowed_headers)
+    assert allowed_headers.get("access-control-allow-origin") == "http://localhost:3000", (
+        allowed_status,
+        allowed_headers,
+    )
     _, _, denied_headers = http_request(
-        "OPTIONS", "/v1/orders",
+        "OPTIONS",
+        "/v1/orders",
         headers={"origin": "https://evil.example", "access-control-request-method": "POST"},
     )
     assert "access-control-allow-origin" not in denied_headers
@@ -474,7 +492,8 @@ def test_networks_are_segmented(service, unreachable_host):
     probe = (
         "import socket,sys\n"
         "try:\n"
-        f"    socket.create_connection(('{unreachable_host}', 5432 if '-db' in '{unreachable_host}' else 5671), timeout=2)\n"
+        f"    port = 5432 if '-db' in '{unreachable_host}' else 5671\n"
+        f"    socket.create_connection(('{unreachable_host}', port), timeout=2)\n"
         "    print('REACHABLE')\n"
         "except OSError as error:\n"
         "    print('blocked:', error)\n"
@@ -484,7 +503,9 @@ def test_networks_are_segmented(service, unreachable_host):
 
 
 def test_databases_refuse_plaintext_and_passwordless_tcp_logins():
-    plaintext = compose_exec("order-db", "psql", "host=localhost user=order dbname=order sslmode=disable", "-c", "select 1")
+    plaintext = compose_exec(
+        "order-db", "psql", "host=localhost user=order dbname=order sslmode=disable", "-c", "select 1"
+    )
     assert plaintext.returncode != 0 and "no encryption" in plaintext.stderr
     without_certificate = compose_exec(
         "order-db", "psql", "host=localhost user=postgres dbname=order sslmode=require", "-c", "select 1"

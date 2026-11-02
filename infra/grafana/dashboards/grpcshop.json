@@ -271,6 +271,11 @@
           "refId": "B",
           "expr": "grpcshop_outbox_oldest_age_seconds",
           "legendFormat": "oldest age (s)"
+        },
+        {
+          "refId": "C",
+          "expr": "grpcshop_outbox_parked_backlog",
+          "legendFormat": "parked events"
         }
       ]
     },

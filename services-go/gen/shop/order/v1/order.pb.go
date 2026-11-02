@@ -219,6 +219,8 @@ type Order struct {
 	Status        OrderStatus            `protobuf:"varint,8,opt,name=status,proto3,enum=shop.order.v1.OrderStatus" json:"status,omitempty"`
 	// Set for FAILED orders.
 	FailureReason string `protobuf:"bytes,9,opt,name=failure_reason,json=failureReason,proto3" json:"failure_reason,omitempty"`
+	// ISO 4217 code that every *_cents amount on the order is in, e.g. "USD".
+	CurrencyCode  string `protobuf:"bytes,10,opt,name=currency_code,json=currencyCode,proto3" json:"currency_code,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -312,6 +314,13 @@ func (x *Order) GetStatus() OrderStatus {
 func (x *Order) GetFailureReason() string {
 	if x != nil {
 		return x.FailureReason
+	}
+	return ""
+}
+
+func (x *Order) GetCurrencyCode() string {
+	if x != nil {
+		return x.CurrencyCode
 	}
 	return ""
 }
@@ -579,7 +588,7 @@ const file_shop_order_v1_order_proto_rawDesc = "" +
 	"\x03sku\x18\x01 \x01(\tR\x03sku\x12!\n" +
 	"\fproduct_name\x18\x02 \x01(\tR\vproductName\x12\x1a\n" +
 	"\bquantity\x18\x03 \x01(\x05R\bquantity\x12(\n" +
-	"\x10unit_price_cents\x18\x04 \x01(\x03R\x0eunitPriceCents\"\xe5\x02\n" +
+	"\x10unit_price_cents\x18\x04 \x01(\x03R\x0eunitPriceCents\"\x8a\x03\n" +
 	"\x05Order\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
 	"\vcustomer_id\x18\x02 \x01(\tR\n" +
@@ -593,7 +602,9 @@ const file_shop_order_v1_order_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x122\n" +
 	"\x06status\x18\b \x01(\x0e2\x1a.shop.order.v1.OrderStatusR\x06status\x12%\n" +
-	"\x0efailure_reason\x18\t \x01(\tR\rfailureReason\"m\n" +
+	"\x0efailure_reason\x18\t \x01(\tR\rfailureReason\x12#\n" +
+	"\rcurrency_code\x18\n" +
+	" \x01(\tR\fcurrencyCode\"m\n" +
 	"\x12CreateOrderRequest\x12.\n" +
 	"\x05items\x18\x01 \x03(\v2\x18.shop.order.v1.OrderItemR\x05items\x12'\n" +
 	"\x0fidempotency_key\x18\x02 \x01(\tR\x0eidempotencyKey\"!\n" +

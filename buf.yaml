@@ -1,0 +1,18 @@
+version: v2
+modules:
+  - path: api
+    excludes: [api/third_party]
+  # Vendored google/api annotations for HTTP transcoding; not ours to lint.
+  - path: api/third_party
+    lint:
+      ignore: [api/third_party]
+    breaking:
+      ignore: [api/third_party]
+lint:
+  use: [STANDARD]
+  except:
+    # Get/Create/Cancel return the resource itself, as in Google's AIP-131/133.
+    - RPC_RESPONSE_STANDARD_NAME
+    - RPC_REQUEST_RESPONSE_UNIQUE
+breaking:
+  use: [FILE]

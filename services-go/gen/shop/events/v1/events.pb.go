@@ -26,12 +26,14 @@ const (
 type OrderConfirmed struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Unique per event; consumers use it to deduplicate at-least-once delivery.
-	EventId       string                 `protobuf:"bytes,1,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
-	OrderId       string                 `protobuf:"bytes,2,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
-	CustomerId    string                 `protobuf:"bytes,3,opt,name=customer_id,json=customerId,proto3" json:"customer_id,omitempty"`
-	TotalCents    int64                  `protobuf:"varint,4,opt,name=total_cents,json=totalCents,proto3" json:"total_cents,omitempty"`
-	ItemCount     int32                  `protobuf:"varint,5,opt,name=item_count,json=itemCount,proto3" json:"item_count,omitempty"`
-	OccurredAt    *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"`
+	EventId    string                 `protobuf:"bytes,1,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
+	OrderId    string                 `protobuf:"bytes,2,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	CustomerId string                 `protobuf:"bytes,3,opt,name=customer_id,json=customerId,proto3" json:"customer_id,omitempty"`
+	TotalCents int64                  `protobuf:"varint,4,opt,name=total_cents,json=totalCents,proto3" json:"total_cents,omitempty"`
+	ItemCount  int32                  `protobuf:"varint,5,opt,name=item_count,json=itemCount,proto3" json:"item_count,omitempty"`
+	OccurredAt *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"`
+	// ISO 4217 code of total_cents.
+	CurrencyCode  string `protobuf:"bytes,7,opt,name=currency_code,json=currencyCode,proto3" json:"currency_code,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -108,6 +110,13 @@ func (x *OrderConfirmed) GetOccurredAt() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *OrderConfirmed) GetCurrencyCode() string {
+	if x != nil {
+		return x.CurrencyCode
+	}
+	return ""
+}
+
 // Published with routing key "order.cancelled".
 type OrderCancelled struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -116,6 +125,8 @@ type OrderCancelled struct {
 	CustomerId    string                 `protobuf:"bytes,3,opt,name=customer_id,json=customerId,proto3" json:"customer_id,omitempty"`
 	RefundedCents int64                  `protobuf:"varint,4,opt,name=refunded_cents,json=refundedCents,proto3" json:"refunded_cents,omitempty"`
 	OccurredAt    *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"`
+	// ISO 4217 code of refunded_cents.
+	CurrencyCode  string `protobuf:"bytes,6,opt,name=currency_code,json=currencyCode,proto3" json:"currency_code,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -185,11 +196,18 @@ func (x *OrderCancelled) GetOccurredAt() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *OrderCancelled) GetCurrencyCode() string {
+	if x != nil {
+		return x.CurrencyCode
+	}
+	return ""
+}
+
 var File_shop_events_v1_events_proto protoreflect.FileDescriptor
 
 const file_shop_events_v1_events_proto_rawDesc = "" +
 	"\n" +
-	"\x1bshop/events/v1/events.proto\x12\x0eshop.events.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe4\x01\n" +
+	"\x1bshop/events/v1/events.proto\x12\x0eshop.events.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x89\x02\n" +
 	"\x0eOrderConfirmed\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\tR\aeventId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\tR\aorderId\x12\x1f\n" +
@@ -200,7 +218,8 @@ const file_shop_events_v1_events_proto_rawDesc = "" +
 	"\n" +
 	"item_count\x18\x05 \x01(\x05R\titemCount\x12;\n" +
 	"\voccurred_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"occurredAt\"\xcb\x01\n" +
+	"occurredAt\x12#\n" +
+	"\rcurrency_code\x18\a \x01(\tR\fcurrencyCode\"\xf0\x01\n" +
 	"\x0eOrderCancelled\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\tR\aeventId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\tR\aorderId\x12\x1f\n" +
@@ -208,7 +227,8 @@ const file_shop_events_v1_events_proto_rawDesc = "" +
 	"customerId\x12%\n" +
 	"\x0erefunded_cents\x18\x04 \x01(\x03R\rrefundedCents\x12;\n" +
 	"\voccurred_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"occurredAtB&Z$grpcshop/gen/shop/events/v1;eventsv1b\x06proto3"
+	"occurredAt\x12#\n" +
+	"\rcurrency_code\x18\x06 \x01(\tR\fcurrencyCodeB&Z$grpcshop/gen/shop/events/v1;eventsv1b\x06proto3"
 
 var (
 	file_shop_events_v1_events_proto_rawDescOnce sync.Once

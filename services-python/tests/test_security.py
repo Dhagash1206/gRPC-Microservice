@@ -7,7 +7,7 @@ from grpc_health.v1 import health_pb2, health_pb2_grpc
 from shop.inventory.v1 import inventory_pb2, inventory_pb2_grpc
 from shop.payment.v1 import payment_pb2, payment_pb2_grpc
 
-CHARGE_REQUEST = payment_pb2.ChargeRequest(idempotency_key="k", customer_id="c", amount_cents=100)
+CHARGE_REQUEST = payment_pb2.ChargeRequest(idempotency_key="k", customer_id="c", amount_cents=100, currency_code="USD")
 CANCEL_REQUEST = payment_pb2.CancelChargeRequest(idempotency_key="k")
 
 
@@ -21,7 +21,9 @@ def test_payment_rejects_callers_other_than_order(payment_service, caller):
 
 def test_envoy_may_list_inventory_products(inventory_service):
     with inventory_service.channel("envoy") as channel:
-        products = list(inventory_pb2_grpc.InventoryServiceStub(channel).ListProducts(inventory_pb2.ListProductsRequest()))
+        products = list(
+            inventory_pb2_grpc.InventoryServiceStub(channel).ListProducts(inventory_pb2.ListProductsRequest())
+        )
     assert products
 
 

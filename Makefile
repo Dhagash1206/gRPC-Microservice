@@ -2,7 +2,7 @@ SHELL := /bin/bash
 VENV := .venv
 PYTHON := $(abspath $(VENV)/bin/python)
 
-.PHONY: help setup certs proto test test-python test-go up down clean logs demo e2e token dlq-replay
+.PHONY: help setup certs proto lint test test-python test-go up down clean logs demo e2e token dlq-replay
 
 help: ## List targets
 	@grep -E '^[a-z0-9-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "} {printf "  %-12s %s\n", $$1, $$2}'
@@ -22,6 +22,12 @@ certs/ca.crt:
 
 proto: ## Regenerate Python, Go and Envoy code from api/
 	./tools/generate_protos.sh all
+
+lint: ## golangci-lint, ruff and buf (same checks as CI)
+	cd services-go && go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6 run ./...
+	$(VENV)/bin/ruff check services-python tools
+	$(VENV)/bin/ruff format --check services-python tools
+	go run github.com/bufbuild/buf/cmd/buf@v1.50.0 lint
 
 test: test-python test-go ## All unit/integration tests (Docker needed for Postgres)
 

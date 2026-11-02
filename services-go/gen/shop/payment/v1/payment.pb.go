@@ -21,6 +21,62 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type ChargeStatus int32
+
+const (
+	ChargeStatus_CHARGE_STATUS_UNSPECIFIED ChargeStatus = 0
+	ChargeStatus_CHARGE_STATUS_SUCCEEDED   ChargeStatus = 1
+	ChargeStatus_CHARGE_STATUS_DECLINED    ChargeStatus = 2
+	ChargeStatus_CHARGE_STATUS_REFUNDED    ChargeStatus = 3
+	// A fence: cancelled before any charge was made.
+	ChargeStatus_CHARGE_STATUS_CANCELLED ChargeStatus = 4
+)
+
+// Enum value maps for ChargeStatus.
+var (
+	ChargeStatus_name = map[int32]string{
+		0: "CHARGE_STATUS_UNSPECIFIED",
+		1: "CHARGE_STATUS_SUCCEEDED",
+		2: "CHARGE_STATUS_DECLINED",
+		3: "CHARGE_STATUS_REFUNDED",
+		4: "CHARGE_STATUS_CANCELLED",
+	}
+	ChargeStatus_value = map[string]int32{
+		"CHARGE_STATUS_UNSPECIFIED": 0,
+		"CHARGE_STATUS_SUCCEEDED":   1,
+		"CHARGE_STATUS_DECLINED":    2,
+		"CHARGE_STATUS_REFUNDED":    3,
+		"CHARGE_STATUS_CANCELLED":   4,
+	}
+)
+
+func (x ChargeStatus) Enum() *ChargeStatus {
+	p := new(ChargeStatus)
+	*p = x
+	return p
+}
+
+func (x ChargeStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ChargeStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_shop_payment_v1_payment_proto_enumTypes[0].Descriptor()
+}
+
+func (ChargeStatus) Type() protoreflect.EnumType {
+	return &file_shop_payment_v1_payment_proto_enumTypes[0]
+}
+
+func (x ChargeStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ChargeStatus.Descriptor instead.
+func (ChargeStatus) EnumDescriptor() ([]byte, []int) {
+	return file_shop_payment_v1_payment_proto_rawDescGZIP(), []int{0}
+}
+
 type CancelOutcome int32
 
 const (
@@ -59,11 +115,11 @@ func (x CancelOutcome) String() string {
 }
 
 func (CancelOutcome) Descriptor() protoreflect.EnumDescriptor {
-	return file_shop_payment_v1_payment_proto_enumTypes[0].Descriptor()
+	return file_shop_payment_v1_payment_proto_enumTypes[1].Descriptor()
 }
 
 func (CancelOutcome) Type() protoreflect.EnumType {
-	return &file_shop_payment_v1_payment_proto_enumTypes[0]
+	return &file_shop_payment_v1_payment_proto_enumTypes[1]
 }
 
 func (x CancelOutcome) Number() protoreflect.EnumNumber {
@@ -72,7 +128,7 @@ func (x CancelOutcome) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use CancelOutcome.Descriptor instead.
 func (CancelOutcome) EnumDescriptor() ([]byte, []int) {
-	return file_shop_payment_v1_payment_proto_rawDescGZIP(), []int{0}
+	return file_shop_payment_v1_payment_proto_rawDescGZIP(), []int{1}
 }
 
 type CancelChargeRequest struct {
@@ -168,8 +224,10 @@ type ChargeRequest struct {
 	IdempotencyKey string                 `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
 	CustomerId     string                 `protobuf:"bytes,2,opt,name=customer_id,json=customerId,proto3" json:"customer_id,omitempty"`
 	AmountCents    int64                  `protobuf:"varint,3,opt,name=amount_cents,json=amountCents,proto3" json:"amount_cents,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// ISO 4217 code of amount_cents, e.g. "USD". Required.
+	CurrencyCode  string `protobuf:"bytes,4,opt,name=currency_code,json=currencyCode,proto3" json:"currency_code,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ChargeRequest) Reset() {
@@ -223,6 +281,13 @@ func (x *ChargeRequest) GetAmountCents() int64 {
 	return 0
 }
 
+func (x *ChargeRequest) GetCurrencyCode() string {
+	if x != nil {
+		return x.CurrencyCode
+	}
+	return ""
+}
+
 type ChargeResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PaymentId     string                 `protobuf:"bytes,1,opt,name=payment_id,json=paymentId,proto3" json:"payment_id,omitempty"`
@@ -267,6 +332,102 @@ func (x *ChargeResponse) GetPaymentId() string {
 	return ""
 }
 
+type GetChargeRequest struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	IdempotencyKey string                 `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *GetChargeRequest) Reset() {
+	*x = GetChargeRequest{}
+	mi := &file_shop_payment_v1_payment_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetChargeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetChargeRequest) ProtoMessage() {}
+
+func (x *GetChargeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_shop_payment_v1_payment_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetChargeRequest.ProtoReflect.Descriptor instead.
+func (*GetChargeRequest) Descriptor() ([]byte, []int) {
+	return file_shop_payment_v1_payment_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *GetChargeRequest) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
+	}
+	return ""
+}
+
+type GetChargeResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PaymentId     string                 `protobuf:"bytes,1,opt,name=payment_id,json=paymentId,proto3" json:"payment_id,omitempty"`
+	Status        ChargeStatus           `protobuf:"varint,2,opt,name=status,proto3,enum=shop.payment.v1.ChargeStatus" json:"status,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetChargeResponse) Reset() {
+	*x = GetChargeResponse{}
+	mi := &file_shop_payment_v1_payment_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetChargeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetChargeResponse) ProtoMessage() {}
+
+func (x *GetChargeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_shop_payment_v1_payment_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetChargeResponse.ProtoReflect.Descriptor instead.
+func (*GetChargeResponse) Descriptor() ([]byte, []int) {
+	return file_shop_payment_v1_payment_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *GetChargeResponse) GetPaymentId() string {
+	if x != nil {
+		return x.PaymentId
+	}
+	return ""
+}
+
+func (x *GetChargeResponse) GetStatus() ChargeStatus {
+	if x != nil {
+		return x.Status
+	}
+	return ChargeStatus_CHARGE_STATUS_UNSPECIFIED
+}
+
 var File_shop_payment_v1_payment_proto protoreflect.FileDescriptor
 
 const file_shop_payment_v1_payment_proto_rawDesc = "" +
@@ -275,23 +436,37 @@ const file_shop_payment_v1_payment_proto_rawDesc = "" +
 	"\x13CancelChargeRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\"P\n" +
 	"\x14CancelChargeResponse\x128\n" +
-	"\aoutcome\x18\x01 \x01(\x0e2\x1e.shop.payment.v1.CancelOutcomeR\aoutcome\"|\n" +
+	"\aoutcome\x18\x01 \x01(\x0e2\x1e.shop.payment.v1.CancelOutcomeR\aoutcome\"\xa1\x01\n" +
 	"\rChargeRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12\x1f\n" +
 	"\vcustomer_id\x18\x02 \x01(\tR\n" +
 	"customerId\x12!\n" +
-	"\famount_cents\x18\x03 \x01(\x03R\vamountCents\"/\n" +
+	"\famount_cents\x18\x03 \x01(\x03R\vamountCents\x12#\n" +
+	"\rcurrency_code\x18\x04 \x01(\tR\fcurrencyCode\"/\n" +
 	"\x0eChargeResponse\x12\x1d\n" +
 	"\n" +
-	"payment_id\x18\x01 \x01(\tR\tpaymentId*\x8d\x01\n" +
+	"payment_id\x18\x01 \x01(\tR\tpaymentId\";\n" +
+	"\x10GetChargeRequest\x12'\n" +
+	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\"i\n" +
+	"\x11GetChargeResponse\x12\x1d\n" +
+	"\n" +
+	"payment_id\x18\x01 \x01(\tR\tpaymentId\x125\n" +
+	"\x06status\x18\x02 \x01(\x0e2\x1d.shop.payment.v1.ChargeStatusR\x06status*\x9f\x01\n" +
+	"\fChargeStatus\x12\x1d\n" +
+	"\x19CHARGE_STATUS_UNSPECIFIED\x10\x00\x12\x1b\n" +
+	"\x17CHARGE_STATUS_SUCCEEDED\x10\x01\x12\x1a\n" +
+	"\x16CHARGE_STATUS_DECLINED\x10\x02\x12\x1a\n" +
+	"\x16CHARGE_STATUS_REFUNDED\x10\x03\x12\x1b\n" +
+	"\x17CHARGE_STATUS_CANCELLED\x10\x04*\x8d\x01\n" +
 	"\rCancelOutcome\x12\x1e\n" +
 	"\x1aCANCEL_OUTCOME_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15CANCEL_OUTCOME_FENCED\x10\x01\x12\x1b\n" +
 	"\x17CANCEL_OUTCOME_REFUNDED\x10\x02\x12$\n" +
-	" CANCEL_OUTCOME_NOTHING_TO_REFUND\x10\x032\xb8\x01\n" +
+	" CANCEL_OUTCOME_NOTHING_TO_REFUND\x10\x032\x8c\x02\n" +
 	"\x0ePaymentService\x12I\n" +
 	"\x06Charge\x12\x1e.shop.payment.v1.ChargeRequest\x1a\x1f.shop.payment.v1.ChargeResponse\x12[\n" +
-	"\fCancelCharge\x12$.shop.payment.v1.CancelChargeRequest\x1a%.shop.payment.v1.CancelChargeResponseB(Z&grpcshop/gen/shop/payment/v1;paymentv1b\x06proto3"
+	"\fCancelCharge\x12$.shop.payment.v1.CancelChargeRequest\x1a%.shop.payment.v1.CancelChargeResponse\x12R\n" +
+	"\tGetCharge\x12!.shop.payment.v1.GetChargeRequest\x1a\".shop.payment.v1.GetChargeResponseB(Z&grpcshop/gen/shop/payment/v1;paymentv1b\x06proto3"
 
 var (
 	file_shop_payment_v1_payment_proto_rawDescOnce sync.Once
@@ -305,26 +480,32 @@ func file_shop_payment_v1_payment_proto_rawDescGZIP() []byte {
 	return file_shop_payment_v1_payment_proto_rawDescData
 }
 
-var file_shop_payment_v1_payment_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_shop_payment_v1_payment_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_shop_payment_v1_payment_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_shop_payment_v1_payment_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_shop_payment_v1_payment_proto_goTypes = []any{
-	(CancelOutcome)(0),           // 0: shop.payment.v1.CancelOutcome
-	(*CancelChargeRequest)(nil),  // 1: shop.payment.v1.CancelChargeRequest
-	(*CancelChargeResponse)(nil), // 2: shop.payment.v1.CancelChargeResponse
-	(*ChargeRequest)(nil),        // 3: shop.payment.v1.ChargeRequest
-	(*ChargeResponse)(nil),       // 4: shop.payment.v1.ChargeResponse
+	(ChargeStatus)(0),            // 0: shop.payment.v1.ChargeStatus
+	(CancelOutcome)(0),           // 1: shop.payment.v1.CancelOutcome
+	(*CancelChargeRequest)(nil),  // 2: shop.payment.v1.CancelChargeRequest
+	(*CancelChargeResponse)(nil), // 3: shop.payment.v1.CancelChargeResponse
+	(*ChargeRequest)(nil),        // 4: shop.payment.v1.ChargeRequest
+	(*ChargeResponse)(nil),       // 5: shop.payment.v1.ChargeResponse
+	(*GetChargeRequest)(nil),     // 6: shop.payment.v1.GetChargeRequest
+	(*GetChargeResponse)(nil),    // 7: shop.payment.v1.GetChargeResponse
 }
 var file_shop_payment_v1_payment_proto_depIdxs = []int32{
-	0, // 0: shop.payment.v1.CancelChargeResponse.outcome:type_name -> shop.payment.v1.CancelOutcome
-	3, // 1: shop.payment.v1.PaymentService.Charge:input_type -> shop.payment.v1.ChargeRequest
-	1, // 2: shop.payment.v1.PaymentService.CancelCharge:input_type -> shop.payment.v1.CancelChargeRequest
-	4, // 3: shop.payment.v1.PaymentService.Charge:output_type -> shop.payment.v1.ChargeResponse
-	2, // 4: shop.payment.v1.PaymentService.CancelCharge:output_type -> shop.payment.v1.CancelChargeResponse
-	3, // [3:5] is the sub-list for method output_type
-	1, // [1:3] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	1, // 0: shop.payment.v1.CancelChargeResponse.outcome:type_name -> shop.payment.v1.CancelOutcome
+	0, // 1: shop.payment.v1.GetChargeResponse.status:type_name -> shop.payment.v1.ChargeStatus
+	4, // 2: shop.payment.v1.PaymentService.Charge:input_type -> shop.payment.v1.ChargeRequest
+	2, // 3: shop.payment.v1.PaymentService.CancelCharge:input_type -> shop.payment.v1.CancelChargeRequest
+	6, // 4: shop.payment.v1.PaymentService.GetCharge:input_type -> shop.payment.v1.GetChargeRequest
+	5, // 5: shop.payment.v1.PaymentService.Charge:output_type -> shop.payment.v1.ChargeResponse
+	3, // 6: shop.payment.v1.PaymentService.CancelCharge:output_type -> shop.payment.v1.CancelChargeResponse
+	7, // 7: shop.payment.v1.PaymentService.GetCharge:output_type -> shop.payment.v1.GetChargeResponse
+	5, // [5:8] is the sub-list for method output_type
+	2, // [2:5] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_shop_payment_v1_payment_proto_init() }
@@ -337,8 +518,8 @@ func file_shop_payment_v1_payment_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_shop_payment_v1_payment_proto_rawDesc), len(file_shop_payment_v1_payment_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   4,
+			NumEnums:      2,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

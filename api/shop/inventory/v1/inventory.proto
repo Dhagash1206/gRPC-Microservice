@@ -42,6 +42,8 @@ message Product {
   string name = 2;
   int64 unit_price_cents = 3;
   int32 available_quantity = 4;
+  // ISO 4217 code of unit_price_cents, e.g. "USD".
+  string currency_code = 5;
 }
 
 message StockItem {
@@ -72,7 +74,9 @@ message CommitReservationRequest {
   string order_id = 1;
 }
 
-message CommitReservationResponse {}
+message CommitReservationResponse {
+  string reservation_id = 1;
+}
 
 message ReleaseStockRequest {
   // Releases are keyed by order so they also work when ReserveStock's outcome is unknown.

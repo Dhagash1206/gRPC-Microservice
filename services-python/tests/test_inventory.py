@@ -31,8 +31,8 @@ def release(inventory_stub, order_id: str) -> None:
     inventory_stub.ReleaseStock(inventory_pb2.ReleaseStockRequest(order_id=order_id))
 
 
-def commit(inventory_stub, order_id: str) -> None:
-    inventory_stub.CommitReservation(inventory_pb2.CommitReservationRequest(order_id=order_id))
+def commit(inventory_stub, order_id: str) -> str:
+    return inventory_stub.CommitReservation(inventory_pb2.CommitReservationRequest(order_id=order_id)).reservation_id
 
 
 def assert_rpc_error(code: grpc.StatusCode, call, *args):
@@ -49,6 +49,7 @@ def test_list_products_streams_seeded_catalog(inventory_stub):
 def test_batch_get_products_preserves_request_order(inventory_stub):
     response = inventory_stub.BatchGetProducts(inventory_pb2.BatchGetProductsRequest(skus=["MOUSE", "KEYBOARD"]))
     assert [product.sku for product in response.products] == ["MOUSE", "KEYBOARD"]
+    assert {product.currency_code for product in response.products} == {"USD"}
 
 
 def test_batch_get_unknown_sku_is_not_found(inventory_stub):
@@ -89,9 +90,9 @@ def test_reserve_then_release_restores_stock(inventory_stub):
 
 
 def test_committed_reservation_can_still_be_released_for_cancellation(inventory_stub):
-    reserve(inventory_stub, {"MONITOR": 2}, order_id="order-1")
-    commit(inventory_stub, "order-1")
-    commit(inventory_stub, "order-1")  # idempotent
+    reservation_id = reserve(inventory_stub, {"MONITOR": 2}, order_id="order-1").reservation_id
+    assert commit(inventory_stub, "order-1") == reservation_id
+    assert commit(inventory_stub, "order-1") == reservation_id  # idempotent, so recovery can learn the id
 
     release(inventory_stub, "order-1")
 
@@ -172,7 +173,9 @@ def test_concurrent_release_and_reserve_for_same_order_never_leak_stock(inventor
 @pytest.mark.parametrize("sku", ["MO\x00USE", "A" * 65, ""])
 def test_malformed_sku_is_invalid_not_internal(inventory_stub, sku):
     error = assert_rpc_error(
-        grpc.StatusCode.INVALID_ARGUMENT, inventory_stub.BatchGetProducts, inventory_pb2.BatchGetProductsRequest(skus=[sku])
+        grpc.StatusCode.INVALID_ARGUMENT,
+        inventory_stub.BatchGetProducts,
+        inventory_pb2.BatchGetProductsRequest(skus=[sku]),
     )
     assert len(error.details()) < 100  # the SKU is not echoed back
     assert_rpc_error(grpc.StatusCode.INVALID_ARGUMENT, reserve, inventory_stub, {sku: 1})

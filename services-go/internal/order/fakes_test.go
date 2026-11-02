@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
 	inventoryv1 "grpcshop/gen/shop/inventory/v1"
@@ -21,6 +23,8 @@ type fakeInventory struct {
 	productsBySKU                               map[string]*inventoryv1.Product
 	batchErr, reserveErr, commitErr, releaseErr error
 	reservedOrderIDs, committedIDs, releasedIDs []string
+	// beforeCommitReturns runs once inside CommitReservation, e.g. to simulate recovery racing the request.
+	beforeCommitReturns func()
 }
 
 func (inventory *fakeInventory) BatchGetProducts(_ context.Context, request *inventoryv1.BatchGetProductsRequest, _ ...grpc.CallOption) (*inventoryv1.BatchGetProductsResponse, error) {
@@ -44,10 +48,14 @@ func (inventory *fakeInventory) ReserveStock(_ context.Context, request *invento
 
 func (inventory *fakeInventory) CommitReservation(_ context.Context, request *inventoryv1.CommitReservationRequest, _ ...grpc.CallOption) (*inventoryv1.CommitReservationResponse, error) {
 	inventory.committedIDs = append(inventory.committedIDs, request.GetOrderId())
+	if hook := inventory.beforeCommitReturns; hook != nil {
+		inventory.beforeCommitReturns = nil
+		hook()
+	}
 	if inventory.commitErr != nil {
 		return nil, inventory.commitErr
 	}
-	return &inventoryv1.CommitReservationResponse{}, nil
+	return &inventoryv1.CommitReservationResponse{ReservationId: "res_1"}, nil
 }
 
 func (inventory *fakeInventory) ReleaseStock(_ context.Context, request *inventoryv1.ReleaseStockRequest, _ ...grpc.CallOption) (*inventoryv1.ReleaseStockResponse, error) {
@@ -61,9 +69,11 @@ func (inventory *fakeInventory) ReleaseStock(_ context.Context, request *invento
 type fakePayment struct {
 	paymentv1.PaymentServiceClient
 
-	chargeErr, cancelErr error
-	chargeRequests       []*paymentv1.ChargeRequest
-	cancelledKeys        []string
+	chargeErr, cancelErr, getChargeErr error
+	chargeRequests                     []*paymentv1.ChargeRequest
+	cancelledKeys                      []string
+	// statusByKey is what GetCharge reports; successful charges are recorded here.
+	statusByKey map[string]paymentv1.ChargeStatus
 	// beforeChargeReturns runs inside Charge, e.g. to simulate a concurrent takeover.
 	beforeChargeReturns func()
 }
@@ -76,7 +86,26 @@ func (payment *fakePayment) Charge(_ context.Context, request *paymentv1.ChargeR
 	if payment.chargeErr != nil {
 		return nil, payment.chargeErr
 	}
+	payment.recordStatus(request.GetIdempotencyKey(), paymentv1.ChargeStatus_CHARGE_STATUS_SUCCEEDED)
 	return &paymentv1.ChargeResponse{PaymentId: "pay_1"}, nil
+}
+
+func (payment *fakePayment) recordStatus(idempotencyKey string, chargeStatus paymentv1.ChargeStatus) {
+	if payment.statusByKey == nil {
+		payment.statusByKey = map[string]paymentv1.ChargeStatus{}
+	}
+	payment.statusByKey[idempotencyKey] = chargeStatus
+}
+
+func (payment *fakePayment) GetCharge(_ context.Context, request *paymentv1.GetChargeRequest, _ ...grpc.CallOption) (*paymentv1.GetChargeResponse, error) {
+	if payment.getChargeErr != nil {
+		return nil, payment.getChargeErr
+	}
+	chargeStatus, found := payment.statusByKey[request.GetIdempotencyKey()]
+	if !found {
+		return nil, status.Error(codes.NotFound, "no charge for this idempotency_key")
+	}
+	return &paymentv1.GetChargeResponse{PaymentId: "pay_1", Status: chargeStatus}, nil
 }
 
 func (payment *fakePayment) CancelCharge(_ context.Context, request *paymentv1.CancelChargeRequest, _ ...grpc.CallOption) (*paymentv1.CancelChargeResponse, error) {
@@ -84,6 +113,9 @@ func (payment *fakePayment) CancelCharge(_ context.Context, request *paymentv1.C
 		return nil, payment.cancelErr
 	}
 	payment.cancelledKeys = append(payment.cancelledKeys, request.GetIdempotencyKey())
+	if payment.statusByKey[request.GetIdempotencyKey()] == paymentv1.ChargeStatus_CHARGE_STATUS_SUCCEEDED {
+		payment.recordStatus(request.GetIdempotencyKey(), paymentv1.ChargeStatus_CHARGE_STATUS_REFUNDED)
+	}
 	return &paymentv1.CancelChargeResponse{Outcome: paymentv1.CancelOutcome_CANCEL_OUTCOME_REFUNDED}, nil
 }
 
@@ -187,15 +219,12 @@ func (repository *memoryRepository) ClaimInFlightOrders(context.Context, time.Du
 	var claimed []InFlightOrder
 	for _, order := range repository.ordersByID {
 		switch order.GetStatus() {
-		case statusPending:
-			order.Status = statusCompensating
-			order.FailureReason = "checkout did not complete"
-		case statusCompensating, statusCancelling:
+		case statusPending, statusCompensating, statusCancelling:
 		default:
 			continue
 		}
 		claimed = append(claimed, InFlightOrder{ID: order.GetId(), CustomerID: order.GetCustomerId(),
-			TotalCents: order.GetTotalCents(), Status: order.GetStatus()})
+			TotalCents: order.GetTotalCents(), CurrencyCode: order.GetCurrencyCode(), Status: order.GetStatus()})
 	}
 	return claimed, nil
 }

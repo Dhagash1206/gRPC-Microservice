@@ -30,6 +30,7 @@ class ProductRecord:
     name: str
     unit_price_cents: int
     available_quantity: int
+    currency_code: str
 
 
 class UnknownSkuError(Exception):
@@ -59,7 +60,7 @@ class ReservationNotCommittableError(Exception):
         super().__init__(f"reservation for order {order_id} is missing, released or expired")
 
 
-PRODUCT_COLUMNS = "sku, name, unit_price_cents, available_quantity"
+PRODUCT_COLUMNS = "sku, name, unit_price_cents, available_quantity, currency_code"
 
 
 class InventoryRepository:
@@ -70,7 +71,9 @@ class InventoryRepository:
     def get_products(self, skus: list[str]) -> list[ProductRecord]:
         unique_skus = list(dict.fromkeys(skus))
         with self._pool.connection() as conn:
-            rows = conn.execute(f"SELECT {PRODUCT_COLUMNS} FROM products WHERE sku = ANY(%s)", (unique_skus,)).fetchall()
+            rows = conn.execute(
+                f"SELECT {PRODUCT_COLUMNS} FROM products WHERE sku = ANY(%s)", (unique_skus,)
+            ).fetchall()
         records_by_sku = {row[0]: ProductRecord(*row) for row in rows}
         missing_skus = [sku for sku in unique_skus if sku not in records_by_sku]
         if missing_skus:
@@ -139,7 +142,8 @@ class InventoryRepository:
                 )
         return reservation_id
 
-    def commit(self, order_id: str) -> None:
+    def commit(self, order_id: str) -> str:
+        """Returns the reservation id; safe to repeat."""
         with self._pool.connection() as conn, conn.transaction():
             committed_row = conn.execute(
                 "UPDATE reservations SET status = %s WHERE order_id = %s "
@@ -148,6 +152,7 @@ class InventoryRepository:
             ).fetchone()
         if committed_row is None:
             raise ReservationNotCommittableError(order_id)
+        return committed_row[0]
 
     def release(self, order_id: str) -> bool:
         """Returns True if stock was returned; False if nothing was held (a fence is stored)."""

@@ -81,6 +81,8 @@ func newOrderDatabase(t *testing.T) *pgxpool.Pool {
 
 type outboxRow struct {
 	published bool
+	parked    bool
+	claimed   bool
 	attempts  int
 }
 
@@ -110,11 +112,19 @@ func readRow(t *testing.T, pool *pgxpool.Pool, eventID string) outboxRow {
 	t.Helper()
 	var row outboxRow
 	err := pool.QueryRow(context.Background(),
-		"SELECT published_at IS NOT NULL, attempts FROM outbox WHERE id = $1", eventID).Scan(&row.published, &row.attempts)
+		`SELECT published_at IS NOT NULL, parked_at IS NOT NULL, coalesce(claimed_until > now(), false), attempts
+		FROM outbox WHERE id = $1`, eventID).Scan(&row.published, &row.parked, &row.claimed, &row.attempts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return row
+}
+
+func setAttempts(t *testing.T, pool *pgxpool.Pool, eventID string, attempts int) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), "UPDATE outbox SET attempts = $2 WHERE id = $1", eventID, attempts); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func clearOutbox(t *testing.T, pool *pgxpool.Pool) {
@@ -163,39 +173,67 @@ func TestRelay(t *testing.T) {
 		}
 	})
 
-	t.Run("unconfirmed events stay pending with an extra attempt", func(t *testing.T) {
+	t.Run("events the broker rejects stay pending with an extra attempt", func(t *testing.T) {
 		clearOutbox(t, pool)
 		confirmedEvent := insertEvent(t, pool, time.Hour, false, nil)
-		unconfirmedEvent := insertEvent(t, pool, time.Minute, false, nil)
+		rejectedEvent := insertEvent(t, pool, time.Minute, false, nil)
 		publisher := &fakePublisher{confirm: func([]outbox.Message) ([]string, error) {
-			return []string{confirmedEvent}, errBrokerDown
+			return []string{confirmedEvent}, nil
 		}}
 
 		count, err := outbox.NewRelay(pool, publisher, discardedLogger).PublishBatch(ctx)
 
-		if count != 1 || !errors.Is(err, errBrokerDown) {
-			t.Fatalf("got count %d, err %v; want 1 and the broker error", count, err)
+		if count != 1 || err != nil {
+			t.Fatalf("got count %d, err %v; want 1 and no error", count, err)
 		}
 		if row := readRow(t, pool, confirmedEvent); !row.published || row.attempts != 0 {
 			t.Fatalf("confirmed event: %+v", row)
 		}
-		if row := readRow(t, pool, unconfirmedEvent); row.published || row.attempts != 1 {
-			t.Fatalf("unconfirmed event: %+v, want pending with 1 attempt", row)
+		if row := readRow(t, pool, rejectedEvent); row.published || row.parked || row.claimed || row.attempts != 1 {
+			t.Fatalf("rejected event: %+v, want pending and unclaimed with 1 attempt", row)
 		}
 	})
 
-	t.Run("broker failure leaves every event pending for the next batch", func(t *testing.T) {
+	t.Run("an event is parked after MaxAttempts rejections and no longer blocks the queue", func(t *testing.T) {
 		clearOutbox(t, pool)
-		eventIDs := []string{insertEvent(t, pool, time.Hour, false, nil), insertEvent(t, pool, time.Minute, false, nil)}
-		failing := &fakePublisher{confirm: func([]outbox.Message) ([]string, error) { return nil, errBrokerDown }}
+		poisonEvent := insertEvent(t, pool, time.Hour, false, nil)
+		setAttempts(t, pool, poisonEvent, outbox.MaxAttempts-1)
+		rejectAll := &fakePublisher{confirm: func([]outbox.Message) ([]string, error) { return nil, nil }}
+
+		if _, err := outbox.NewRelay(pool, rejectAll, discardedLogger).PublishBatch(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if row := readRow(t, pool, poisonEvent); row.published || !row.parked || row.attempts != outbox.MaxAttempts {
+			t.Fatalf("poison event: %+v, want parked after %d attempts", row, outbox.MaxAttempts)
+		}
+
+		healthyEvent := insertEvent(t, pool, time.Minute, false, nil)
+		publisher := &fakePublisher{}
+		count, err := outbox.NewRelay(pool, publisher, discardedLogger).PublishBatch(ctx)
+		if err != nil || count != 1 || !slices.Equal(publishedIDs(publisher.batches[0]), []string{healthyEvent}) {
+			t.Fatalf("next batch: count %d, err %v; want only the healthy event", count, err)
+		}
+	})
+
+	t.Run("broker failure releases every event without counting an attempt", func(t *testing.T) {
+		clearOutbox(t, pool)
+		confirmedEvent := insertEvent(t, pool, time.Hour, false, nil)
+		eventIDs := []string{insertEvent(t, pool, time.Minute, false, nil), insertEvent(t, pool, time.Second, false, nil)}
+		failing := &fakePublisher{confirm: func([]outbox.Message) ([]string, error) {
+			return []string{confirmedEvent}, errBrokerDown
+		}}
 
 		count, err := outbox.NewRelay(pool, failing, discardedLogger).PublishBatch(ctx)
-		if count != 0 || !errors.Is(err, errBrokerDown) {
-			t.Fatalf("got count %d, err %v", count, err)
+		if count != 1 || !errors.Is(err, errBrokerDown) {
+			t.Fatalf("got count %d, err %v; want 1 and the broker error", count, err)
+		}
+		if !readRow(t, pool, confirmedEvent).published {
+			t.Fatal("event confirmed before the failure must be marked published")
 		}
 		for _, eventID := range eventIDs {
-			if row := readRow(t, pool, eventID); row.published || row.attempts != 1 {
-				t.Fatalf("event %s: %+v, want pending with 1 attempt", eventID, row)
+			// An outage must never push events towards parking.
+			if row := readRow(t, pool, eventID); row.published || row.claimed || row.attempts != 0 {
+				t.Fatalf("event %s: %+v, want pending and unclaimed with 0 attempts", eventID, row)
 			}
 		}
 
@@ -203,6 +241,67 @@ func TestRelay(t *testing.T) {
 		count, err = outbox.NewRelay(pool, recovered, discardedLogger).PublishBatch(ctx)
 		if err != nil || count != 2 {
 			t.Fatalf("after recovery: count %d, err %v", count, err)
+		}
+	})
+
+	t.Run("claims are committed before publishing and skipped by other relays until they expire", func(t *testing.T) {
+		clearOutbox(t, pool)
+		eventID := insertEvent(t, pool, time.Minute, false, nil)
+		otherRelay := &fakePublisher{}
+		blocking := &fakePublisher{confirm: func(messages []outbox.Message) ([]string, error) {
+			// Runs while the first relay is "talking to the broker": its claim must already be visible.
+			if row := readRow(t, pool, eventID); !row.claimed {
+				t.Error("claim not committed before publishing")
+			}
+			if count, err := outbox.NewRelay(pool, otherRelay, discardedLogger).PublishBatch(ctx); count != 0 || err != nil {
+				t.Errorf("second relay took a claimed event: count %d, err %v", count, err)
+			}
+			return nil, errBrokerDown
+		}}
+		if _, err := outbox.NewRelay(pool, blocking, discardedLogger).PublishBatch(ctx); !errors.Is(err, errBrokerDown) {
+			t.Fatalf("got %v, want the broker error", err)
+		}
+		if len(otherRelay.batches) != 0 {
+			t.Fatal("second relay published a claimed event")
+		}
+
+		// A relay that crashed mid-publish leaves a claim behind; it is retried once the lease passes.
+		if _, err := pool.Exec(ctx, "UPDATE outbox SET claimed_until = now() + interval '1 minute' WHERE id = $1", eventID); err != nil {
+			t.Fatal(err)
+		}
+		if count, _ := outbox.NewRelay(pool, &fakePublisher{}, discardedLogger).PublishBatch(ctx); count != 0 {
+			t.Fatal("event published while still claimed")
+		}
+		if _, err := pool.Exec(ctx, "UPDATE outbox SET claimed_until = now() - interval '1 second' WHERE id = $1", eventID); err != nil {
+			t.Fatal(err)
+		}
+		if count, err := outbox.NewRelay(pool, &fakePublisher{}, discardedLogger).PublishBatch(ctx); count != 1 || err != nil {
+			t.Fatalf("expired claim: count %d, err %v; want it published", count, err)
+		}
+	})
+
+	t.Run("purge deletes only events published before the retention window", func(t *testing.T) {
+		clearOutbox(t, pool)
+		oldPublished := insertEvent(t, pool, 0, true, nil)
+		if _, err := pool.Exec(ctx, "UPDATE outbox SET published_at = now() - interval '8 days' WHERE id = $1", oldPublished); err != nil {
+			t.Fatal(err)
+		}
+		recentPublished := insertEvent(t, pool, 0, true, nil)
+		oldPending := insertEvent(t, pool, 30*24*time.Hour, false, nil)
+
+		purged, err := outbox.NewRelay(pool, &fakePublisher{}, discardedLogger).PurgePublished(ctx, outbox.PublishedRetention)
+		if err != nil || purged != 1 {
+			t.Fatalf("purged %d, err %v; want 1", purged, err)
+		}
+		var remaining []string
+		rows, _ := pool.Query(ctx, "SELECT id::text FROM outbox ORDER BY created_at")
+		for rows.Next() {
+			var eventID string
+			_ = rows.Scan(&eventID)
+			remaining = append(remaining, eventID)
+		}
+		if !slices.Equal(remaining, []string{oldPending, recentPublished}) {
+			t.Fatalf("remaining %v, want the pending and the recently published event", remaining)
 		}
 	})
 
